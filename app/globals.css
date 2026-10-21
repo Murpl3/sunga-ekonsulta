@@ -1,0 +1,38 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Theme tokens (accent + banner) */
+.theme-sunga     { --accent:#0a9d98; --accent-h:#088681; --accent-soft:#e3f6f5; --banner:linear-gradient(120deg,#0f766e,#0a9d98 60%,#4ab5a0); }
+.theme-warm      { --accent:#c2562a; --accent-h:#a8471f; --accent-soft:#fdeee4; --banner:linear-gradient(120deg,#44403c,#57534e 55%,#9a4a26); }
+.theme-midnight  { --accent:#22d3ee; --accent-h:#67e8f9; --accent-soft:rgba(34,211,238,.14); --banner:linear-gradient(120deg,#0f172a,#312e81 60%,#0f172a); }
+.theme-contrast  { --accent:#facc15; --accent-h:#fde047; --accent-soft:rgba(250,204,21,.18); --banner:#000; }
+
+.theme-warm { background:#fbf7f1 !important; }
+.theme-warm .bg-slate-50 { background:#f5efe6; }
+
+/* Dark themes: remap the neutral utilities used by the app */
+.theme-midnight, .theme-contrast { color:#e2e8f0; }
+.theme-midnight { background:#020617 !important; }
+.theme-contrast { background:#000 !important; color:#fff; }
+.theme-midnight .bg-white, .theme-midnight .bg-white\/90 { background:#0f172a; }
+.theme-midnight .bg-slate-50, .theme-midnight .bg-slate-100 { background:#1e293b; }
+.theme-midnight .hover\:bg-slate-50:hover, .theme-midnight .hover\:bg-slate-100:hover { background:#1e293b; }
+.theme-midnight .text-slate-800, .theme-midnight .text-slate-700 { color:#e2e8f0; }
+.theme-midnight .text-slate-600, .theme-midnight .text-slate-500 { color:#94a3b8; }
+.theme-midnight .border-slate-200, .theme-midnight .border-slate-100, .theme-midnight .border-slate-300 { border-color:#1e293b; }
+.theme-midnight .bg-slate-800 { background:#334155; }
+.theme-midnight .text-white.bg-\[var\(--accent\)\] { color:#020617; }
+
+.theme-contrast .bg-white, .theme-contrast .bg-slate-50, .theme-contrast .bg-slate-100 { background:#000; }
+.theme-contrast .text-slate-800, .theme-contrast .text-slate-700, .theme-contrast .text-slate-600, .theme-contrast .text-slate-500, .theme-contrast .text-slate-400 { color:#fde68a; }
+.theme-contrast .border-slate-200, .theme-contrast .border-slate-100, .theme-contrast .border-slate-300 { border-color:#facc15; }
+.theme-contrast .hover\:bg-slate-50:hover, .theme-contrast .hover\:bg-slate-100:hover { background:#422006; }
+.theme-contrast .bg-\[var\(--accent\)\], .theme-contrast .bg-\[var\(--accent\)\] * { color:#000 !important; }
+.theme-contrast .bg-slate-800 { background:#facc15; color:#000; }
+
+/* Logo stays legible on dark themes */
+.theme-midnight .logo-img, .theme-contrast .logo-img { background:#fff; border-radius:8px; padding:2px 6px; }
+input, select, textarea { color: inherit; }
+.theme-midnight input, .theme-midnight select, .theme-midnight textarea,
+.theme-contrast input, .theme-contrast select, .theme-contrast textarea { color-scheme: dark; }
