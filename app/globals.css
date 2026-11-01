@@ -31,8 +31,10 @@
 .theme-contrast .bg-\[var\(--accent\)\], .theme-contrast .bg-\[var\(--accent\)\] * { color:#000 !important; }
 .theme-contrast .bg-slate-800 { background:#facc15; color:#000; }
 
-/* Logo stays legible on dark themes */
-.theme-midnight .logo-img, .theme-contrast .logo-img { background:#fff; border-radius:8px; padding:2px 6px; }
 input, select, textarea { color: inherit; }
 .theme-midnight input, .theme-midnight select, .theme-midnight textarea,
 .theme-contrast input, .theme-contrast select, .theme-contrast textarea { color-scheme: dark; }
+
+/* Hide scrollbars on compact tab rows (still scrollable by touch/trackpad if ever needed) */
+.no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
