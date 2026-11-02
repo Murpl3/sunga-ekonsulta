@@ -1,6 +1,7 @@
+import * as db from "@/lib/store";
 // Shared, clinic-wide knowledge for the YAKAP Assistant, learned from all accounts.
 // Stored in <project>/data/knowledge.json (or KNOWLEDGE_FILE if set).
-// Mock app: user and role come from the browser and are not verified server-side.
+// User and role come from the signed-in server session.
 import { promises as fs } from "fs";
 import path from "path";
 
@@ -35,11 +36,15 @@ const view = (d) => {
   };
 };
 
-export async function GET() { return Response.json(view(await load())); }
+export async function GET(req) {
+  const me = await db.current(req); if (!me) return db.deny();
+  return Response.json(view(await load()));
+}
 
 export async function POST(req) {
+  const me = await db.current(req); if (!me) return db.deny();
   let b; try { b = await req.json(); } catch { return Response.json({ error: "Invalid request." }, { status: 400 }); }
-  const user = clip(b.user, 30), role = clip(b.role, 20), isAdmin = ADMINS.includes(role);
+  const user = me.username, role = me.role, isAdmin = ADMINS.includes(role);
   if (!/^[a-z0-9._]{2,30}$/i.test(user)) return Response.json({ error: "Invalid user." }, { status: 400 });
   const run = async () => {
     const d = await load(); const now = new Date().toISOString(); let msg = "ok";

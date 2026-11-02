@@ -1,3 +1,4 @@
+import * as db from "@/lib/store";
 // Laboratory connector: reads results from the laboratory system's database (read-only)
 // and matches patients by NAME + BIRTHDATE.
 //
@@ -66,12 +67,14 @@ function demoRows(p) {
   return (p.tests.length ? p.tests : Object.keys(all)).flatMap((k) => (all[k] || []).map(([test_name, result, unit]) => ({ patient_id: "DEMO-001", test_name, result, unit: unit || "", result_date: d })));
 }
 
-export async function GET() {
+export async function GET(req) {
+  const me = await db.current(req); if (!me) return db.deny();
   const c = cfg();
   return Response.json({ mode: mode(), type: c.type || null, configured: mode() === "database" && Boolean(c.host && c.user && c.database && c.query), duplicateCheck: Boolean(c.patientQuery) });
 }
 
 export async function POST(req) {
+  const me = await db.current(req); if (!me) return db.deny();
   let b; try { b = await req.json(); } catch { return Response.json({ error: "Invalid request." }, { status: 400 }); }
   const params = { last: clean(b.last), first: clean(b.first), middle: clean(b.middle), dob: iso(b.dob), since: iso(b.since || "1900-01-01") };
   if (!params.last || !params.first || !/^\d{4}-\d{2}-\d{2}$/.test(params.dob)) return Response.json({ error: "Last name, first name and birthdate are required to match the patient." }, { status: 400 });

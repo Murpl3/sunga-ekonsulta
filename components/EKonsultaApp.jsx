@@ -40,6 +40,13 @@ const daysUntil = (iso) => Math.round((new Date(iso) - new Date(todayISO())) / 8
 const addDays = (n) => { const d = new Date(todayISO()); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
 let uid = 100;
 const nid = () => ++uid;
+// Calls the app's own server. Throws Error(message) on failure; err.status 401 = session ended.
+async function api(url, body, method) {
+  const res = await fetch(url, { method: method || (body === undefined ? "GET" : "POST"), headers: body === undefined ? {} : { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body), credentials: "same-origin", cache: "no-store" });
+  let data = {}; try { data = await res.json(); } catch {}
+  if (!res.ok) { const e = new Error(data.error || `Server error (${res.status})`); e.status = res.status; throw e; }
+  return data;
+}
 
 const GEO = {
   "DAVAO DEL SUR": { "DIGOS CITY": { zip: "8002", brgys: ["ZONE 1", "ZONE 2", "ZONE 3", "MATTI", "SAN JOSE"] }, "BANSALAN": { zip: "8005", brgys: ["POBLACION", "ALEGRE", "KINURI"] } },
@@ -167,12 +174,12 @@ const mk = (id, last, first, middle, dob, sex, type, extra = {}) => ({
 const NORMAL_PE = Object.fromEntries(["heent", "chest", "heart", "abdomen", "gu", "dre", "skin", "neuro"].map((k) => [k, ["Essentially normal"]]));
 const SEED_HSA = { atc: "ATC-0001", date: todayISO(), pmh: { items: ["Hypertension"], allergy: "", bpS: "150", bpD: "95", others: "", cancer: "", ptb: "", hep: "", eptb: "" }, surg: [], fam: { items: ["None"], allergy: "", bpS: "", bpD: "", others: "", cancer: "", ptb: "", hep: "", eptb: "" }, social: { smoke: "N", packs: "", alcohol: "N", bottles: "", drugs: "N", sexActive: "Y" }, imm: { child: [], adult: [], preg: [], elder: ["None"], others: "" }, fp: "", mens: {}, preg: {}, v: { height: "168", weight: "70", sys: "130", dia: "84", hr: "76", rr: "18", temp: "36.7", blood: "O+", survey: "Awake" }, pe: Object.fromEntries(["heent", "chest", "heart", "abdomen", "gu", "dre", "skin", "neuro"].map((k) => [k, ["Essentially normal"]])), peOther: {}, ncd: { risk: "10% to <20%" }, labs: [], notes: "" };
 const SEED_RX = [{ drug: "Amlodipine", qty: 30, days: 30, sig: "5 mg tablet, 1 tab once daily", dispensed: true }];
-const SEED_CONSULT = { atc: "ATC-0002", copay: "", date: todayISO(), cc: ["HEADACHE"], ccOther: "", hpi: "Follow-up for hypertension; controlled on medication, occasional nape pain.", v: { sys: "130", dia: "84", rr: "18", height: "168", weight: "70", temp: "36.7", hr: "76" }, pe: NORMAL_PE, peOther: {}, dx: ["Essential (primary) hypertension"], labs: {}, labOther: "", labOtherDoc: "", labOtherCli: "", mgmtNA: false, mgmt: ["Counseling for Lifestyle Modification"], mgmtOther: "", meds: SEED_RX };
+const SEED_CONSULT = { pcuCheck: { status: "Done", note: "", at: todayISO() }, atc: "ATC-0002", copay: "", date: todayISO(), cc: ["HEADACHE"], ccOther: "", hpi: "Follow-up for hypertension; controlled on medication, occasional nape pain.", v: { sys: "130", dia: "84", rr: "18", height: "168", weight: "70", temp: "36.7", hr: "76" }, pe: NORMAL_PE, peOther: {}, dx: ["Essential (primary) hypertension"], labs: {}, labOther: "", labOtherDoc: "", labOtherCli: "", mgmtNA: false, mgmt: ["Counseling for Lifestyle Modification"], mgmtOther: "", meds: SEED_RX };
 const SEED = [
-  mk(1, "Dela Cruz", "Juan", "Santos", "1968-03-14", "M", "MM", { hsa: SEED_HSA, fpeStarted: true, emp: { choice: "YES", agree: true, date: todayISO(), verified: true }, consults: [SEED_CONSULT], meds: SEED_RX }),
+  mk(1, "Dela Cruz", "Juan", "Santos", "1968-03-14", "M", "MM", { caseNo: "TP110363202025091110550001", category: "Senior Citizen", hsa: SEED_HSA, fpeStarted: true, emp: { choice: "YES", agree: true, date: todayISO(), verified: true }, consults: [SEED_CONSULT], meds: SEED_RX }),
   mk(2, "Reyes", "Maria", "Garcia", "1975-07-22", "F", "MM", { hsa: { ...SEED_HSA, fp: "Y", mens: { app: "Y", menarche: "13", menopause: "N", lmp: addDays(-20) }, preg: { app: "Y", g: "2", p: "2", full: "2", living: "2" } }, fpeStarted: true }),
   mk(3, "Bautista", "Pedro", "Lim", "1990-11-02", "M", "MM", { fpeStarted: true }),
-  mk(4, "Aquino", "Liza", "Mendoza", "2016-05-30", "F", "DD"),
+  mk(4, "Aquino", "Liza", "Mendoza", "2016-05-30", "F", "DD", { category: "Employed Private", member: { pin: "12-050031600-1", last: "AQUINO", first: "ROBERTO", middle: "SANTOS", rel: "CHILD" } }),
   mk(5, "Castillo", "Ramon", "Tan", "1959-01-09", "M", "MM"),
   mk(6, "Villanueva", "Ana", "Cruz", "1984-09-18", "F", "NM"),
 ];
@@ -223,6 +230,8 @@ function validateRecord(c) {
   const e = [];
   if (c.type !== "NM" && !/^\d{2}-\d{9}-\d$/.test(c.pin)) e.push("Invalid or missing PhilHealth PIN");
   if (!c.hsa) e.push("First patient encounter not completed");
+  { const k = c.consults[c.consults.length - 1]; if (k && (!k.pcuCheck || k.pcuCheck.status !== "Done")) e.push("PCU liveness check not done for the latest consultation"); }
+  if (c.type === "DD" && !(c.member && c.member.last)) e.push("Dependent: PhilHealth member (principal) not recorded");
   if (!(c.emp && c.emp.choice === "YES" && c.emp.verified)) e.push("Empanelment (YES) not verified");
   const k = c.consults[c.consults.length - 1];
   if (k) { if (!dxList(k).length) e.push("Consultation has no diagnosis"); if (!k.v.sys || !k.v.dia) e.push("Consultation vitals incomplete"); }
@@ -595,21 +604,64 @@ const tranche2 = (c) => {
 function Tranche({ t, showAmt }) { return t.done ? <span title={`Done ${t.date}${showAmt ? ` · ₱${t.amount.toLocaleString()}` : ""}`} className="px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700 whitespace-nowrap">{showAmt ? `Done · ₱${t.amount.toLocaleString()}` : `Done · ${t.date.slice(5)}`}</span> : <span title={t.pending ? `${t.pending} lab result(s) pending` : ""} className="px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-500 whitespace-nowrap">{t.pending ? `${t.pending} lab pending` : "Not yet done"}</span>; }
 const regKey = (c) => (c.pin ? "PIN:" + c.pin : `NM:${c.last}|${c.first}|${c.dob}`.toUpperCase());
 // Merge clients from the registration site; keep local clinical data (FPE, consults, labs, meds...).
+// PhilHealth membership categories (UHC Act). Shown on eKAS / ePresS and sent in the XML.
+const MEM_CATS = ["Employed Private", "Employed Government", "Kasambahay", "Self-Earning Individual", "Professional Practitioner", "Overseas Filipino Worker", "Lifetime Member", "Senior Citizen", "Indigent (NHTS-PR)", "Sponsored (LGU / National Government)", "Person with Disability", "4Ps Beneficiary", "Filipino with Dual Citizenship", "Naturalized Filipino", "Other"];
+const RELS = ["Spouse", "Child", "Parent", "Other"];
+// Member = the PhilHealth member the client is covered under (themselves, or the principal for a dependent).
+const memberName = (c) => (c.type === "DD" && c.member && c.member.last ? `${c.member.last}, ${c.member.first}${c.member.middle ? " " + c.member.middle : ""}`.toUpperCase() : fullName(c));
+const memberPin = (c) => (c.type === "DD" && c.member && c.member.pin ? c.member.pin : c.pin || "");
+// PCU liveness check (PhilHealth Check Utility) after every encounter.
+const pcuErr = (p) => (!p || !p.status ? "PCU liveness check: choose Done or Not done." : p.status === "Not done" && !(p.note || "").trim() ? "PCU liveness check: give the reason it was not done." : "");
+function PcuField({ v, set }) {
+  const p = v || {};
+  return <F label="PCU liveness check" req><div className="flex gap-2"><select className={inp() + " !w-32 shrink-0"} aria-label="PCU liveness check" value={p.status || ""} onChange={(e) => set({ ...p, status: e.target.value, at: todayISO() })}><option value="">Select</option><option>Done</option><option>Not done</option></select>
+    <input className={inp()} aria-label="PCU reference or reason" placeholder={p.status === "Not done" ? "Reason (required)" : "Reference no. (optional)"} value={p.note || ""} onChange={(e) => set({ ...p, note: e.target.value })} /></div></F>;
+}
 function mergeRegistry(prev, incoming) {
   const map = new Map(prev.map((c) => [regKey(c), c]));
   let added = 0, updated = 0;
   for (const r of incoming) {
     const emp = r.empanelled ? { choice: "YES", agree: true, date: r.empanelDate || r.regDate || todayISO(), verified: true, source: "registry" } : null;
     const reg = { extId: r.extId, pin: r.pin, last: r.last.toUpperCase(), first: r.first.toUpperCase(), middle: r.middle.toUpperCase(), ext: r.ext.toUpperCase(), dob: r.dob, sex: r.sex || "M", type: r.type,
-      civil: r.civil, mobile: r.mobile, prov: r.prov, mun: r.mun, brgy: r.brgy, zip: r.zip, regDate: r.regDate, consent: r.consent, loa: r.loa, pcu: r.pcu, emp, fromRegistry: true };
+      civil: r.civil, mobile: r.mobile, prov: r.prov, mun: r.mun, brgy: r.brgy, zip: r.zip, regDate: r.regDate, consent: r.consent, loa: r.loa, pcu: r.pcu, emp, fromRegistry: true,
+      ...(r.caseNo ? { caseNo: r.caseNo } : {}), ...(r.category ? { category: r.category } : {}), ...(r.member && r.member.last ? { member: r.member } : {}) };
     const k = regKey(reg); const old = map.get(k);
     if (old) { map.set(k, { ...old, ...reg }); updated++; }
     else { map.set(k, { ...mk(nid(), reg.last, reg.first, reg.middle, reg.dob, reg.sex, reg.type), ...reg }); added++; }
   }
   return { list: [...map.values()], added, updated };
 }
-function RegistrationModule({ clients, setClients, go, role }) {
+function MembershipModal({ c, role, onClose, setClients }) {
   const toast = useToast(), log = useLog();
+  const edit = ["superadmin", "admin", "encoder"].includes(role);
+  const [f, setF] = useState({ caseNo: c.caseNo || "", category: c.category || "", member: { pin: "", last: "", first: "", middle: "", rel: "", ...(c.member || {}) } });
+  const [err, setErr] = useState("");
+  const m = (k, v) => setF({ ...f, member: { ...f.member, [k]: k === "pin" ? v : v.toUpperCase() } });
+  const save = () => {
+    if (f.member.pin && !/^\d{2}-?\d{9}-?\d$/.test(f.member.pin)) return setErr("Member PIN must be 12 digits (e.g. 12-345678901-2).");
+    if (c.type === "DD" && (!f.member.last.trim() || !f.member.first.trim())) return setErr("Dependent: enter the member's last and first name.");
+    setErr(""); setClients((p) => p.map((x) => (x.id === c.id ? { ...x, caseNo: f.caseNo.trim().toUpperCase(), category: f.category, ...(c.type === "DD" ? { member: f.member } : {}) } : x)));
+    log("Membership details updated", fullName(c)); toast("Membership details saved."); onClose();
+  };
+  return <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4"><div className="bg-white rounded-xl shadow-xl max-w-xl w-full p-5">
+    <h3 className="font-semibold">Membership details</h3><p className="text-xs text-slate-500 mb-3">{fullName(c)} · {c.pin || "No PIN"} · {TYPES[c.type]}</p>
+    <fieldset disabled={!edit} className="space-y-3">
+      <div className="grid grid-cols-2 gap-3"><F label="Case No."><input className={inp()} placeholder="e.g. TP110363202025..." value={f.caseNo} onChange={(e) => setF({ ...f, caseNo: e.target.value })} /></F>
+        <F label="Membership category"><select className={inp()} value={f.category} onChange={(e) => setF({ ...f, category: e.target.value })}><option value="">Select</option>{MEM_CATS.map((x) => <option key={x}>{x}</option>)}</select></F></div>
+      {c.type === "DD" && <><div className="text-xs font-semibold text-slate-600 pt-1">PhilHealth member (principal) of this dependent</div>
+        <div className="grid grid-cols-2 gap-3"><F label="Member PIN"><input className={inp()} value={f.member.pin} onChange={(e) => m("pin", e.target.value)} /></F>
+          <F label="Relationship to member"><select className={inp()} value={f.member.rel} onChange={(e) => m("rel", e.target.value)}><option value="">Select</option>{RELS.map((x) => <option key={x} value={x.toUpperCase()}>{x}</option>)}</select></F>
+          <F label="Member last name" req><input className={inp()} value={f.member.last} onChange={(e) => m("last", e.target.value)} /></F>
+          <F label="Member first name" req><input className={inp()} value={f.member.first} onChange={(e) => m("first", e.target.value)} /></F>
+          <F label="Member middle name"><input className={inp()} value={f.member.middle} onChange={(e) => m("middle", e.target.value)} /></F></div></>}
+    </fieldset>
+    {!edit && <p className="mt-2 text-[11px] text-slate-500">Only the Encoder / IT, Admin or Super Admin can change these details.</p>}
+    {err && <div className="mt-3"><Notice>{err}</Notice></div>}
+    <div className="flex justify-end gap-2 mt-4"><Btn v="white" onClick={onClose}>{edit ? "Cancel" : "Close"}</Btn>{edit && <Btn v="green" onClick={save}>Save</Btn>}</div>
+  </div></div>;
+}
+function RegistrationModule({ clients, setClients, go, role }) {
+  const toast = useToast(), log = useLog(); const [mem, setMem] = useState(null);
   const [info, setInfo] = useState({ mode: null, name: "registration site" });
   const [busy, setBusy] = useState(false); const [last, setLast] = useState(null);
   const [q, setQ] = useState(""); const [show, setShow] = useState("all");
@@ -641,10 +693,11 @@ function RegistrationModule({ clients, setClients, go, role }) {
         <span className="text-[11px] text-slate-400 ml-auto">Registration, empanelment and consents are managed on the registration site.</span>
       </div>
       <Table key={q + show} pageSize={6} cols={["PIN", "Name", "Type", "Age/Sex", "Barangay", "Empanelled", "1st tranche", "2nd tranche"]} rows={rows.map((c) => [
-        <span key="p" className="whitespace-nowrap text-xs">{c.pin || "—"}</span>, <span key="n" className="font-medium whitespace-nowrap" title={c.pcu || ""}>{fullName(c)}</span>, <span key="t" className="text-xs">{TYPES[c.type]}</span>, <span key="g" className="whitespace-nowrap">{calcAge(c.dob)} / {c.sex}</span>, <span key="a" className="text-xs whitespace-nowrap" title={[c.brgy, c.mun, c.prov].filter(Boolean).join(", ")}>{c.brgy || "—"}</span>,
+        <span key="p" className="whitespace-nowrap text-xs">{c.pin || "—"}</span>, <button key="n" type="button" onClick={() => setMem(c.id)} className="font-medium whitespace-nowrap text-left hover:underline" title="Membership details (Case No., category, member)">{fullName(c)}</button>, <span key="t" className="text-xs leading-tight block">{TYPES[c.type]}{c.type === "DD" && <span className="block text-[10px] text-slate-500 whitespace-nowrap">of {c.member && c.member.last ? memberName(c) : <span className="text-amber-700">member not set</span>}</span>}{c.category && c.type !== "DD" && <span className="block text-[10px] text-slate-500 whitespace-nowrap">{c.category}</span>}</span>, <span key="g" className="whitespace-nowrap">{calcAge(c.dob)} / {c.sex}</span>, <span key="a" className="text-xs whitespace-nowrap" title={[c.brgy, c.mun, c.prov].filter(Boolean).join(", ")}>{c.brgy || "—"}</span>,
         c.emp && c.emp.verified ? <span key="e" className="text-xs text-emerald-700 whitespace-nowrap" title={c.emp.date || ""}>Yes</span> : <span key="e" className="text-xs text-amber-700 whitespace-nowrap">Not yet</span>,
         <Tranche key="t1" t={tranche1(c)} showAmt={can(role, "pay")} />, <Tranche key="t2" t={tranche2(c)} showAmt={can(role, "pay")} />])} empty="No clients. Click Sync clients." />
-      <p className="mt-2 text-[11px] text-slate-400">{can(role, "pay") ? "1st tranche ₱680: doctor's consultation completed · 2nd tranche ₱1,020: performance, all ordered labs have results." : "1st tranche: doctor's consultation completed · 2nd tranche: performance, all ordered labs have results."}</p>
+      {mem && <MembershipModal c={clients.find((x) => x.id === mem)} role={role} setClients={setClients} onClose={() => setMem(null)} />}
+      <p className="mt-2 text-[11px] text-slate-400">Click a name for Case No., membership category and the member of a dependent. {can(role, "pay") ? "1st tranche ₱680: doctor's consultation completed · 2nd tranche ₱1,020: performance, all ordered labs have results." : "1st tranche: doctor's consultation completed · 2nd tranche: performance, all ordered labs have results."}</p>
     </Panel>
   );
 }
@@ -732,6 +785,7 @@ function hsaTabErr(h, id, c) {
   const age = calcAge(c.dob);
   if (id === "profile") {
     if (!h.date) return "Health screening & assessment date is required."; if (isFuture(h.date)) return "Assessment date cannot be in the future.";
+    { const e = pcuErr(h.pcuCheck); if (e) return e; }
     return hxErr(h.pmh, "Past medical history");
   }
   if (id === "family") {
@@ -847,6 +901,7 @@ function HSAWizard({ c, back, save, started }) {
           <Sec title="Client profile"><div className="grid md:grid-cols-3 gap-3">
             <F label="Authorization Transaction Code"><input className={inp()} value={h.atc} onChange={(e) => upd("atc", e.target.value.toUpperCase())} /></F>
             <F label="Health Screening & Assessment Date" req><input type="date" className={inp()} value={h.date} onChange={(e) => upd("date", e.target.value)} /></F>
+            <PcuField v={h.pcuCheck} set={(v) => upd("pcuCheck", v)} />
           </div></Sec>
           <Sec title="Past medical history *"><HistoryBlock hx={h.pmh} set={(v) => upd("pmh", v)} /></Sec>
         </>}
@@ -1039,6 +1094,7 @@ function cErr(f, id, c) {
   if (id === "profile") {
     if (!f.date) return "Consultation date is required."; if (isFuture(f.date)) return "Consultation date cannot be in the future.";
     if (f.copay && isNaN(parseFloat(f.copay))) return "Co-payment must be a number.";
+    { const e = pcuErr(f.pcuCheck); if (e) return e; }
     if (!f.cc.length) return "Chief complaint: tick at least one."; if (f.cc.includes("OTHERS") && !f.ccOther.trim()) return "Chief complaint: specify Others.";
   }
   if (id === "pe") return vitalsErr(f.v, c.dob);
@@ -1134,10 +1190,11 @@ function ConsultWizard({ c, back, save, initial, physicians }) {
       <Steps labels={C_STEPS.map(([, l]) => l)} idx={pos} onGo={(p) => { setErr(""); setStep(C_STEPS[p][0]); }} />
       <fieldset disabled={done} className="space-y-4">
         {step === "profile" && <>
-          <div className="grid md:grid-cols-3 gap-3">
+          <div className="grid md:grid-cols-4 gap-3">
             <F label="Authorization Transaction Code"><input className={inp()} value={f.atc} onChange={(e) => upd("atc", e.target.value.toUpperCase())} /></F>
             <F label="Co-payment"><Unit u="Php"><input className={inp()} inputMode="decimal" value={f.copay} onChange={(e) => upd("copay", numOnly(e.target.value))} /></Unit></F>
             <F label="Consultation date" req><input type="date" className={inp()} value={f.date} onChange={(e) => upd("date", e.target.value)} /></F>
+            <PcuField v={f.pcuCheck} set={(v) => upd("pcuCheck", v)} />
             {physicians && <F label="Attending physician" req><select className={inp()} value={f.doctor ? f.doctor.prc : ""} onChange={(e) => { const ph = physicians.find((x) => x.prc === e.target.value); upd("doctor", ph ? { name: ph.name, prc: ph.prc } : null); }}><option value="">Select physician</option>{physicians.map((ph) => <option key={ph.prc} value={ph.prc}>{ph.name} (PRC {ph.prc})</option>)}</select></F>}
           </div>
           {editing && <Notice>Correction mode: saving replaces this consultation. Dispensed medicines and lab results already entered are kept.</Notice>}
@@ -1240,7 +1297,7 @@ function LabModule({ clients, setClients }) {
 function MedicineModule({ clients, setClients }) {
   const toast = useToast(); const log = useLog();
   const rows = clients.flatMap((c) => c.meds.map((m, k) => ({ c, m, k })));
-  const disp = (cid, k) => { toast("Medicine dispensed."); log("Medicine dispensed", ""); setClients((p) => p.map((x) => x.id === cid ? { ...x, meds: x.meds.map((m, j) => j === k ? { ...m, dispensed: true } : m) } : x)); };
+  const disp = (cid, k) => { toast("Medicine dispensed."); log("Medicine dispensed", ""); setClients((p) => p.map((x) => x.id === cid ? { ...x, meds: x.meds.map((m, j) => j === k ? { ...m, dispensed: true, dispensedDate: todayISO() } : m) } : x)); };
   return (
     <Paged>
       <Panel title="MEDICINE DISPENSING">
@@ -1567,7 +1624,7 @@ const markEkas = (setClients, items, field, by) => setClients((p) => p.map((x) =
   return { ...x, consults: x.consults.map((k, j) => mine.some((it) => it.i === j) ? { ...k, ekas: { ...(k.ekas || {}), [field]: todayISO(), [field + "By"]: by } } : k) };
 }));
 // Layout follows PhilHealth's ELECTRONIC KONSULTA AVAILMENT SLIP (eKAS): 2 copies per consultation (HCI's copy + Patient's copy).
-function printEkas(items, clinic, by = "") {
+function printEkas(items, clinic, by = "", kind = "ekas", users = []) {
   const acc = (clinic.emr && clinic.emr.providerId) || HOSPITAL_ACCNO;
   const d8 = (iso) => (iso ? `${iso.slice(5, 7)}/${iso.slice(8, 10)}/${iso.slice(0, 4)}` : "");
   const now = new Date(), pad = (n) => String(n).padStart(2, "0");
@@ -1581,11 +1638,35 @@ function printEkas(items, clinic, by = "") {
       ...c.labs.filter((l) => l.date === k.date).map((l) => [(LABS[l.test] && LABS[l.test].short) || l.test, l.waived ? "X" : l.result ? "Y" : "", l.result ? l.resultDate || l.date : ""]),
       ...(k.labOther && (k.labOtherDoc === "Y" || k.labOtherCli === "R") ? [["Others - " + k.labOther.toUpperCase(), "", ""]] : [])];
     const txn = (k.txn || `SP${acc.replace(/\D/g, "")}${k.date.replace(/-/g, "")}${String(c.id).padStart(4, "0")}${i + 1}`);
+    const head = (title) => `<div class="top">${title}</div>
+      <div class="two"><div>HCI Name: ${u(HOSPITAL)}<br>HCI Accreditation No.: ${u(acc)}</div><div>Case No.: ${u(c.caseNo || "")}<br>Transaction No.: ${u(txn)}</div></div>
+      <div class="row">Patient Name <i>(Pangalan ng Pasyente)</i>: ${u(fullName(c))} &nbsp; Age <i>(Edad)</i>: ${u(calcAge(c.dob) + " yr(s) old")} &nbsp; Contact No. <i>(Numero ng Telepono)</i>: ${u(c.mobile)}</div>
+      <div class="two"><div>PIN (PhilHealth Identification Number): ${u((c.pin || memberPin(c)).replace(/-/g, ""))}<br>Membership Type: ${u(c.type === "MM" ? "✔" : "")} MEMBER ${u(c.type === "DD" ? "✔" : "")} DEPENDENT</div><div>Membership Category: ${u(c.category || "", 80)}${c.type === "DD" ? `<br>Member: ${u(memberName(c))}` : ""}</div></div>`;
+    if (kind === "epress") {
+      const doc = ekasDoctor(k, clinic), du = users.find((x) => x.prc && x.prc === doc.prc) || {};
+      const rx = c.meds.filter((m) => (k.meds || []).some((x) => x.drug === m.drug));
+      const days = Math.max(0, ...rx.map((m) => +m.days || 0)); const nd = new Date(k.date); nd.setDate(nd.getDate() + days);
+      return `<section class="slip">${head("ELECTRONIC PRESCRIPTION SLIP (ePresS)")}
+      <div class="bar">To be filled out by the facility <i>(pupunan ng pasilidad)</i></div>
+      <div class="rxh"><b style="font-size:20px">℞</b> <span>USE GENERIC NAME</span></div>
+      <table><thead><tr><th style="width:5%">#</th><th style="width:34%">Generic name / strength / form</th><th style="width:10%">Quantity</th><th>Instructions (Sig.)</th><th style="width:12%">Duration</th><th style="width:13%">Dispensed</th></tr></thead>
+      <tbody>${rx.map((m, j) => `<tr><td class="c">${j + 1}</td><td>${esc(m.drug)}</td><td class="c">${esc(m.qty)}</td><td>${esc(m.sig || "")}</td><td class="c">${m.days ? esc(m.days) + " day(s)" : ""}</td><td class="c">${m.dispensed ? "✔ " + d8(m.dispensedDate || "") : ""}</td></tr>`).join("") || `<tr><td colspan="6">No medicine prescribed</td></tr>`}</tbody></table>
+      <div class="two" style="margin-top:12px"><div>Next Dispensing Date: ${u(days && rx.length ? d8(nd.toISOString().slice(0, 10)) : "", 90)}<br><i>(Petsa ng susunod na bigay ng gamot)</i></div><div>Physician: ${u(doc.name)}<br>PRC LIC No.: ${u(doc.prc)} &nbsp; PTR No.: ${u(du.ptr || "", 60)} &nbsp; S2 No.: ${u(du.s2 || "", 60)}</div></div>
+      <div class="sg" style="text-align:right;margin-top:26px"><div class="sl" style="margin-left:auto;width:45%"></div>Signature of physician</div>
+      <div class="bar">To be filled out by the patient <i>(pupunan ng pasyente)</i></div>
+      <div class="cl"><p>Did you receive the above-mentioned medicines? ____ YES <i>(Oo)</i> ____ NO <i>(Hindi)</i><br><i>(Natanggap mo ba ang mga gamot na nabanggit?)</i></p>
+      <div class="sat"><p>Are you satisfied with the medicines you received?<br><i>(Nasiyahan ka ba sa mga gamot na natanggap mo?)</i></p><div>${face("#3ccf3c", '<path d="M10 21q7 6 14 0" stroke="#000" stroke-width="2" fill="none"/>')}${face("#f3e600", '<path d="M10 22h14" stroke="#000" stroke-width="2"/>')}${face("#e53935", '<path d="M10 25q7-6 14 0" stroke="#000" stroke-width="2" fill="none"/>')}</div></div>
+      <p>For your comment, suggestion or complaint:<br><i>(Para sa iyong komento, mungkahi o reklamo)</i></p></div>
+      <div class="ln"></div><div class="ln"></div>
+      <div class="two sg"><div><div class="sl"></div>Signature over printed name of patient<br><i>(Lagda sa nakalimbag na pangalan ng pasyente)</i></div><div></div></div>
+      <p class="nt">Note:<br>Accomplished form shall be submitted to Konsulta Provider.<br><i>(Ang kumpletong form ay dapat isumite sa tagapagbigay ng Konsulta)</i></p>
+      <div class="prep"><i>Prepared Date:${prepared} Prepared By: ${esc((by || "").toUpperCase())}<br>[${copy}]</i></div></section>`;
+    }
     return `<section class="slip">
       <div class="top">ELECTRONIC KONSULTA AVAILMENT SLIP (eKAS)</div>
       <div class="two"><div>HCI Name: ${u(HOSPITAL)}<br>HCI Accreditation No.: ${u(acc)}</div><div>Case No.: ${u(c.caseNo || "")}<br>Transaction No.: ${u(txn)}</div></div>
       <div class="row">Client Name <i>(Pangalan ng Kliyente)</i>: ${u(fullName(c))} &nbsp; Age <i>(Edad)</i>: ${u(calcAge(c.dob) + " yr(s) old")} &nbsp; Contact No.: ${u(c.mobile)}</div>
-      <div class="two"><div>PIN (PhilHealth Identification Number): ${u((c.pin || "").replace(/-/g, ""))}<br>Membership Type: ${u(c.type === "MM" ? "✔" : "")} MEMBER ${u(c.type === "DD" ? "✔" : "")} DEPENDENT</div><div>Membership Category: ${u(c.category || "", 80)}<br>Authorization Transaction Code (ATC): ${u(k.atc || "WALKEDIN")}</div></div>
+      <div class="two"><div>PIN (PhilHealth Identification Number): ${u((c.pin || memberPin(c)).replace(/-/g, ""))}<br>Membership Type: ${u(c.type === "MM" ? "✔" : "")} MEMBER ${u(c.type === "DD" ? "✔" : "")} DEPENDENT</div><div>Membership Category: ${u(c.category || "", 80)}<br>Authorization Transaction Code (ATC): ${u(k.atc || "WALKEDIN")}</div></div>
       <div class="bar">To be filled out by the facility <i>(pupunuan ng pasilidad)</i></div>
       <table><thead><tr><th style="width:30%">Konsulta Services</th><th>(✔) Performed <i>(nagawa)</i><br>(X) Not performed <i>(hindi nagawa)</i></th><th>Date Performed<br><i>(Petsa kung kelan ginawa)</i></th><th style="width:26%">Performed by<br>(Ginawa ni)<br>(Initial/Signature of Health care Provider/technician)<br>(Initial o Lagda ng Health care Provider/technician)</th></tr></thead>
       <tbody>${svc.map(([n, st, d]) => `<tr><td>${esc(n)}</td><td class="c">${st === "Y" ? "✔" : st === "X" ? "X" : ""}</td><td class="c">${d8(d)}</td><td></td></tr>`).join("")}</tbody></table>
@@ -1601,7 +1682,7 @@ function printEkas(items, clinic, by = "") {
     </section>`;
   };
   const w = window.open("", "_blank"); if (!w) return false;
-  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>eKAS</title><style>
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${kind === "epress" ? "ePresS" : "eKAS"}</title><style>
     @page{size:A4;margin:12mm} body{font-family:"DejaVu Sans",Arial,sans-serif;color:#000;margin:0;padding:12px;font-size:10.5px}
     .slip{max-width:740px;margin:0 auto 20px;padding:4px 10px;border:1px solid #ccc;page-break-after:always} .slip:last-child{page-break-after:auto}
     .top{font-size:13px;padding:14px 0 12px;border-bottom:1px solid #000;margin-bottom:12px} u{text-decoration:underline;display:inline-block}
@@ -1610,13 +1691,13 @@ function printEkas(items, clinic, by = "") {
     th{font-weight:normal;text-align:center;vertical-align:middle;padding:6px 3px} .c{text-align:center} .cl{padding-left:10px} .cl p{margin:10px 0}
     .sat{display:flex;align-items:center;gap:50px} .sat>div{display:flex;gap:8px} .fc{display:inline-flex;align-items:center;gap:2px} .bx{width:8px;height:8px;border:1px solid #000;display:inline-block}
     .ln{border-bottom:1px solid #000;margin:18px 0 0;width:95%} .att{margin-top:28px} .sg{margin-top:34px} .sl{border-bottom:1px solid #000;width:72%;margin-bottom:2px}
-    .nt{margin-top:18px} .prep{text-align:right;margin:8px 0 10px}
+    .nt{margin-top:18px} .rxh{display:flex;align-items:center;gap:10px;margin:0 3% 6px} .prep{text-align:right;margin:8px 0 10px}
     @media print{body{padding:0}.slip{border:none;margin:0;max-width:none} button{display:none}}</style></head><body>
     <button onclick="window.print()" style="padding:6px 12px;margin-bottom:10px">Print / Save as PDF</button>${items.map((x) => slip(x, "HCIs Copy") + slip(x, "Patients Copy")).join("")}</body></html>`);
   w.document.close(); setTimeout(() => { try { w.focus(); w.print(); } catch (e) {} }, 400); return true;
 }
 // Print / mark-signed buttons for one client's latest consultation.
-function EkasActions({ c, clinic, setClients }) {
+function EkasActions({ c, clinic, setClients, users = [] }) {
   const toast = useToast(), log = useLog(), me = useMe();
   if (!c.consults.length) return null;
   const i = c.consults.length - 1, e = ekasOf(c, i), by = me.name || "";
@@ -1624,9 +1705,26 @@ function EkasActions({ c, clinic, setClients }) {
   const sign = () => { markEkas(setClients, [{ id: c.id, i }], "signed", by); log("eKAS signed copy received", fullName(c)); toast("eKAS marked as signed."); };
   return <div className="flex items-center gap-2 flex-wrap"><EkasBadge s={ekasState(c, i)} />{e.signed && <span className="text-[11px] text-slate-500">{e.signed} · {e.signedBy}</span>}
     <Btn v="info" onClick={print}><Printer size={14} />{e.printed ? "Reprint eKAS" : "Print eKAS"}</Btn>
+    {(c.consults[i].meds || []).length > 0 && <Btn v="white" onClick={() => { if (!printEkas([{ c, i }], clinic, by, "epress", users)) return toast("Allow pop-ups to print the ePresS.", "error"); log("ePresS printed", fullName(c)); }}><Printer size={14} />ePresS</Btn>}
     {!e.signed && <Btn v="green" disabled={!e.printed} onClick={sign} title={e.printed ? "" : "Print the slip first"}><CheckIcon size={14} />Mark signed</Btn>}</div>;
 }
 // Audit & Reports → eKAS: every consultation in a date range, with batch print and signed tracking.
+function EpressModule({ clients, clinic, users }) {
+  const toast = useToast(), log = useLog(), me = useMe();
+  const [from, setFrom] = useState(todayISO().slice(0, 8) + "01"); const [to, setTo] = useState(todayISO());
+  const rows = clients.flatMap((c) => c.consults.map((k, i) => ({ c, i, k }))).filter((x) => (x.k.meds || []).length && x.k.date >= from && x.k.date <= to).sort((a, b) => b.k.date.localeCompare(a.k.date));
+  const pr = (list) => { if (!list.length) return toast("No prescriptions in this range.", "info"); if (!printEkas(list, clinic, me.name || "", "epress", users)) return toast("Allow pop-ups to print the ePresS.", "error"); log("ePresS printed", `${list.length} slip(s)`); };
+  return (
+    <Panel title={`ePresS — ELECTRONIC PRESCRIPTION SLIPS (${rows.length})`}>
+      <div className="flex flex-wrap gap-2 items-end mb-3">
+        <F label="From"><input type="date" className={inp()} value={from} onChange={(e) => setFrom(e.target.value)} /></F>
+        <F label="To"><input type="date" className={inp()} value={to} onChange={(e) => setTo(e.target.value)} /></F>
+        <Btn v="green" className="ml-auto" onClick={() => pr(rows)}><Printer size={14} />Print {rows.length} slip(s)</Btn>
+      </div>
+      <Table pageSize={7} cols={["Consultation", "Client", "PIN", "Physician", "Medicines", "Dispensed", ""]} rows={rows.map((x) => { const rx = x.c.meds.filter((m) => x.k.meds.some((y) => y.drug === m.drug)); return [x.k.date, fullName(x.c), x.c.pin || "—", ekasDoctor(x.k, clinic).name || "—", <span key="m" className="text-xs">{x.k.meds.map((m) => m.drug).join(", ")}</span>, `${rx.filter((m) => m.dispensed).length}/${rx.length}`, <Btn key="p" v="info" onClick={() => pr([x])}><Printer size={13} />Print</Btn>]; })} empty="No prescriptions in this date range." />
+    </Panel>
+  );
+}
 function EkasModule({ clients, setClients, clinic }) {
   const toast = useToast(), log = useLog(), me = useMe();
   const [from, setFrom] = useState(todayISO().slice(0, 8) + "01"); const [to, setTo] = useState(todayISO()); const [show, setShow] = useState("all");
@@ -1654,7 +1752,7 @@ function EkasModule({ clients, setClients, clinic }) {
   );
 }
 
-function DiagnosticsModule({ clients, setClients, clinic }) {
+function DiagnosticsModule({ clients, setClients, clinic, users = [] }) {
   const toast = useToast(), log = useLog();
   const [sel, setSel] = useState(null); const [tab, setTab] = useState("results"); const [q, setQ] = useState(""); const [show, setShow] = useState("all");
   const done = clients.filter((x) => x.consults.length);
@@ -1673,7 +1771,7 @@ function DiagnosticsModule({ clients, setClients, clinic }) {
     return (
       <Panel title={`DIAGNOSTICS & REFERRAL — ${fullName(c)}`} right={<button type="button" onClick={() => setSel(null)} className="underline">← All consulted clients</button>}>
         <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-slate-500 mb-3"><span>{calcAge(c.dob)} y/o · {c.sex === "F" ? "Female" : "Male"} · {c.pin || "No PIN"}</span><span>Last consultation {k.date}</span><span>Diagnosis: {dxList(k).join("; ")}</span><span>{finished} result(s) in</span></div>
-        <div className="flex gap-1 border-b border-slate-200 mb-3 items-center">{tabs.map(([v, l]) => <button key={v} type="button" onClick={() => setTab(v)} className={`px-3 py-2 text-sm border-b-2 -mb-px ${tab === v ? "border-[var(--accent)] text-[var(--accent)] font-semibold" : "border-transparent text-slate-500 hover:text-slate-800"}`}>{l}</button>)}<div className="ml-auto pb-1" title="Konsulta Availment Slip: print, have the client sign, then mark signed"><EkasActions c={c} clinic={clinic} setClients={setClients} /></div></div>
+        <div className="flex gap-1 border-b border-slate-200 mb-3 items-center">{tabs.map(([v, l]) => <button key={v} type="button" onClick={() => setTab(v)} className={`px-3 py-2 text-sm border-b-2 -mb-px ${tab === v ? "border-[var(--accent)] text-[var(--accent)] font-semibold" : "border-transparent text-slate-500 hover:text-slate-800"}`}>{l}</button>)}<div className="ml-auto pb-1" title="Konsulta Availment Slip: print, have the client sign, then mark signed"><EkasActions c={c} clinic={clinic} setClients={setClients} users={users} /></div></div>
         {tab === "results" && <ClientResults c={c} setClients={setClients} />}
         {tab === "refer" && <ClientReferrals c={c} setClients={setClients} />}
       </Panel>
@@ -1776,7 +1874,7 @@ function SubmissionModule({ clients, setClients, clinic }) {
         <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-3 p-3 rounded-xl border border-slate-200 text-sm">{[["Transmission No. / Code", `${ob.no} / ${ob.code}`, "md:col-span-2"], ["Transaction No.", ob.txn || "None", "md:col-span-2"], ["Tranche", ob.tranche], ["Total amount", can(me.role, "pay") ? peso(ob.items.length * (ob.tranche === "Second" ? TRANCHE_RATE.t2 : TRANCHE_RATE.t1)) : "—"], ["Transmission date", ob.date || "None", "md:col-span-2"], ["Status", bStatus(ob), "md:col-span-2"]].map(([k, v, cls]) => <div key={k} className={cls || ""}><div className="text-[11px] uppercase tracking-wide text-slate-500">{k}</div><div className="font-medium break-all">{v}</div></div>)}</div>
         <div className="flex items-center gap-1.5 text-xs mb-3">{["UNVALIDATED", "PREPARED", "VALIDATED", "SENT", "ACKNOWLEDGED"].map((st, k, arr) => { const cur = arr.indexOf(bStatus(ob) === "PARTLY ACKNOWLEDGED" ? "SENT" : bStatus(ob)); return <React.Fragment key={st}><span className={`px-2 py-0.5 rounded-full ${k < cur ? "bg-emerald-100 text-emerald-700" : k === cur ? "bg-[var(--accent)] text-white" : "bg-slate-100 text-slate-400"}`}>{k + 1}. {st}</span>{k < arr.length - 1 && <ChevronRight size={12} className="text-slate-300" />}</React.Fragment>; })}</div>
         {vErr.length > 0 && <div className="mb-3"><Notice>Validation found {vErr.length} issue(s): {vErr.slice(0, 4).join(" · ")}{vErr.length > 4 ? ` · +${vErr.length - 4} more` : ""}</Notice></div>}
-        <Table pageSize={5} cols={["Consult No. / Code", "Created", "Patient name", "Member name", "Status", ""]} rows={ob.items.map((c) => [`${c.id} / EP${acc}${(ob.created || ob.date || todayISO()).slice(0, 4)}${1000000 + c.id}`, c.consults.length ? xdate(c.consults[c.consults.length - 1].date) : "—", fullName(c), c.member || fullName(c), <Badge key="s" s={subStatus(c)} />,
+        <Table pageSize={5} cols={["Consult No. / Code", "Created", "Patient name", "Member name", "Status", ""]} rows={ob.items.map((c) => [`${c.id} / EP${acc}${(ob.created || ob.date || todayISO()).slice(0, 4)}${1000000 + c.id}`, c.consults.length ? xdate(c.consults[c.consults.length - 1].date) : "—", fullName(c), memberName(c), <Badge key="s" s={subStatus(c)} />,
           editable(ob) ? <button key="x" type="button" title="Remove from transmittal" onClick={() => remove(ob, c)} className="text-rose-600"><Trash2 size={14} /></button> : <span key="x" />])} />
       </div>}
     </Panel>
@@ -1803,9 +1901,9 @@ function xmlMissing(c) {
 function buildKonsultaXml(list, clinic, by) {
   const acc = (clinic.emr && clinic.emr.providerId) || HOSPITAL_ACCNO, now = todayISO(), year = now.slice(0, 4);
   const tx = (c, tag) => `${tag}${acc.replace(/\D/g, "")}${now.replace(/-/g, "")}${String(c.id).padStart(5, "0")}`;
-  const pt = (c) => ({ pPatientPin: pinRaw(c), pPatientType: c.type, pMemPin: pinRaw(c), pEffYear: year });
+  const pt = (c) => ({ pPatientPin: pinRaw(c), pPatientType: c.type, pMemPin: memberPin(c).replace(/-/g, ""), pEffYear: year });
   const enl = list.map((c) => `<ENLISTMENT${xa({ pHciCaseNo: c.caseNo || tx(c, "T"), pHciTransNo: tx(c, "E"), pEffYear: year, pEnlistStat: "1", pEnlistDate: xdate(c.regDate), pPackageType: "K",
-    pMemPin: pinRaw(c), pMemFname: c.first, pMemMname: c.middle, pMemLname: c.last, pMemExtname: c.ext, pMemDob: xdate(c.dob), pMemCat: c.category || "", pPatientPin: pinRaw(c), pPatientFname: c.first, pPatientMname: c.middle, pPatientLname: c.last, pPatientExtname: c.ext,
+    ...(c.type === "DD" && c.member ? { pMemPin: (c.member.pin || "").replace(/-/g, ""), pMemFname: c.member.first, pMemMname: c.member.middle, pMemLname: c.member.last, pMemExtname: "", pMemDob: "", pRelationship: c.member.rel || "" } : { pMemPin: pinRaw(c), pMemFname: c.first, pMemMname: c.middle, pMemLname: c.last, pMemExtname: c.ext, pMemDob: xdate(c.dob) }), pMemCat: c.category || "", pPatientPin: pinRaw(c), pPatientFname: c.first, pPatientMname: c.middle, pPatientLname: c.last, pPatientExtname: c.ext,
     pPatientType: c.type, pPatientSex: c.sex, pPatientContactno: c.mobile, pPatientDob: xdate(c.dob), pPatientAddbrgy: c.brgy, pPatientAddmun: c.mun, pPatientAddprov: c.prov, pPatientAddzipcode: c.zip,
     pWithConsent: c.consent ? "Y" : "N", pWithLoa: c.loa ? "Y" : "N", pTransDate: xdate(now), pCreatedBy: by, pReportStatus: "U", pDeficiencyRemarks: "" })}/>`);
   const prof = list.filter((c) => c.hsa).map((c) => { const h = c.hsa, v = h.v || {};
@@ -1819,7 +1917,7 @@ function buildKonsultaXml(list, clinic, by) {
       + `<BLOODTYPE${xa({ pBloodType: v.blood })}/><PEGENSURVEY${xa({ pGenSurvey: v.survey })}/>`
       + `<NCDQANS${xa({ pRiskLevel: (h.ncd && h.ncd.risk) || "" })}/></PROFILE>`; });
   const soaps = list.flatMap((c) => c.consults.map((k, i) => { const v = k.v || {};
-    return `<SOAP${xa({ pHciCaseNo: c.caseNo || tx(c, "T"), pHciTransNo: tx(c, "S") + (i + 1), pSoapDate: xdate(k.date), ...pt(c), pATC: k.atc || "WALKEDIN", pIsWalkedIn: k.atc ? "N" : "Y", pCoPay: k.copay || "0", pTransDate: xdate(now), pReportStatus: "U", pDeficiencyRemarks: "" })}>`
+    return `<SOAP${xa({ pHciCaseNo: c.caseNo || tx(c, "T"), pHciTransNo: tx(c, "S") + (i + 1), pSoapDate: xdate(k.date), ...pt(c), pATC: k.atc || "WALKEDIN", pIsWalkedIn: k.atc ? "N" : "Y", pCoPay: k.copay || "0", pPcuLiveness: k.pcuCheck && k.pcuCheck.status === "Done" ? "Y" : "N", pPcuRemarks: (k.pcuCheck && k.pcuCheck.note) || "", pTransDate: xdate(now), pReportStatus: "U", pDeficiencyRemarks: "" })}>`
       + `<SUBJECTIVE${xa({ pChiefComplaint: [...(k.cc || []), k.ccOther].filter(Boolean).join("|"), pIllnessHistory: k.hpi })}/>`
       + `<PEPERT${xa({ pSystolic: v.sys, pDiastolic: v.dia, pHr: v.hr, pRr: v.rr, pTemp: v.temp, pHeight: v.height, pWeight: v.weight })}/>`
       + `<ICDS>${dxList(k).map((d) => `<ICD${xa({ pIcdDesc: d })}/>`).join("")}</ICDS>`
@@ -1877,7 +1975,7 @@ function XmlModule({ clients, setClients, clinic }) {
 }
 
 /* ---------- Audit & reports ---------- */
-function AuditModule({ clients, setClients, clinic, audit }) {
+function AuditModule({ clients, setClients, clinic, audit, users = [] }) {
   const [tab, setTab] = useState("activity"); const [aq, setAq] = useState("");
   const expiring = [...clinic.docs.map((d) => ({ n: d.type + " " + d.ref, exp: d.expires })), ...clinic.physicians.map((p) => ({ n: "PRC " + p.name, exp: p.expiry }))].sort((a, b) => a.exp.localeCompare(b.exp));
   const count = (f) => clients.filter(f).length;
@@ -1890,7 +1988,7 @@ function AuditModule({ clients, setClients, clinic, audit }) {
       {tab === "summary" && <Panel title="OPERATIONAL SUMMARY"><Table cols={["Measure", "Count"]} rows={[["Registered clients", clients.length], ["FPE in progress", count((c) => patientStatus(c) === "FPE In Progress")], ["Awaiting empanelment", count((c) => patientStatus(c) === "Awaiting Empanelment")], ["Ready for care", count((c) => patientStatus(c) === "Ready for Care")], ["Consultations completed", count((c) => c.consults.length)], ["Validation failed", count((c) => subStatus(c) === "Validation Failed")], ["Pending acknowledgment", count((c) => subStatus(c) === "Pending Acknowledgment")], ["Acknowledged", count((c) => subStatus(c) === "Acknowledged")], ["Open referrals", clients.reduce((a, c) => a + c.referrals.filter((r) => r.status !== "Closed").length, 0)]]} /></Panel>}
       {tab === "eKAS" && <EkasModule clients={clients} setClients={setClients} clinic={clinic} />}
       {tab === "xml" && <XmlModule clients={clients} setClients={setClients} clinic={clinic} />}
-      {["ePresS"].includes(tab) && <ReportsModule key={tab} clients={clients} kind={tab} />}
+      {tab === "ePresS" && <EpressModule clients={clients} clinic={clinic} users={users} />}
     </div>
   );
 }
@@ -2419,47 +2517,38 @@ const PERMS = {
 const can = (role, page) => (PERMS[page] || []).includes(role);
 // Admins may manage staff accounts but not Super Admin / Admin accounts.
 const canManage = (actor, target) => actor === "superadmin" || (actor === "admin" && !["superadmin", "admin"].includes(target));
-const SEED_USERS = [
-  { id: 1, username: "superadmin", password: "Super@123", name: "System Super Admin", role: "superadmin", active: true },
-  { id: 2, username: "admin", password: "Admin@123", name: "Rosa M. Dizon", role: "admin", active: true },
-  { id: 3, username: "encoder", password: "Encoder@123", name: "Noel Villanueva", role: "encoder", active: true },
-  { id: 4, username: "nurse", password: "Nurse@123", name: "Elena Reyes, RN", role: "nurse", active: true, title: "Primary Care Nurse", prc: "0456123" },
-  { id: 5, username: "doctor", password: "Doctor@123", name: "Dr. Maria L. Santos", role: "doctor", active: true, title: "Family Medicine Physician", prc: "0098231" },
-];
+// Accounts live on the server (data/db/users.json) with hashed passwords; see lib/store.js for the first-run defaults.
 const AVATAR_COLORS = [["", "Theme color"], ["#0a9d98", "Teal"], ["#2563eb", "Blue"], ["#7c3aed", "Violet"], ["#db2777", "Pink"], ["#ea580c", "Orange"], ["#16a34a", "Green"], ["#475569", "Slate"]];
 const pwOk = (s) => s.length >= 8 && /[A-Za-z]/.test(s) && /\d/.test(s);
 function Avatar({ u, size = 32 }) {
   return <div className="rounded-full text-white flex items-center justify-center font-bold shrink-0" style={{ width: size, height: size, fontSize: size * 0.36, background: u.color || "var(--accent)" }}>{initials(u.name)}</div>;
 }
 // My profile: every role can edit its own profile, password and preferences.
-function ProfileModule({ me, setUsers, theme, setTheme, startTab }) {
+function ProfileModule({ me, onUser, theme, setTheme, startTab }) {
   const toast = useToast(), log = useLog();
   const [tab, setTab] = useState(startTab || "profile");
-  const [f, setF] = useState({ name: me.name, title: me.title || "", email: me.email || "", mobile: me.mobile || "", prc: me.prc || "", color: me.color || "" });
+  const [f, setF] = useState({ name: me.name, title: me.title || "", email: me.email || "", mobile: me.mobile || "", prc: me.prc || "", ptr: me.ptr || "", s2: me.s2 || "", color: me.color || "" });
   const [pw, setPw] = useState({ cur: "", next: "", again: "" }); const [show, setShow] = useState(false);
   const [err, setErr] = useState(""); const [pwErr, setPwErr] = useState("");
   const clinical = me.role === "doctor" || me.role === "nurse";
-  const dirty = ["name", "title", "email", "mobile", "prc", "color"].some((k) => (f[k] || "") !== (me[k] || ""));
+  const dirty = ["name", "title", "email", "mobile", "prc", "ptr", "s2", "color"].some((k) => (f[k] || "") !== (me[k] || ""));
   const saveProfile = () => {
     if (f.name.trim().length < 3) return setErr("Full name must be at least 3 characters.");
     if (f.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(f.email)) return setErr("Enter a valid email address.");
     if (f.mobile && !/^09\d{9}$/.test(f.mobile)) return setErr("Mobile number must be 11 digits starting with 09.");
     if (clinical && f.prc && !/^\d{6,8}$/.test(f.prc)) return setErr("PRC license number must be 6–8 digits.");
-    setErr(""); setUsers((l) => l.map((u) => (u.id === me.id ? { ...u, ...f, name: f.name.trim(), title: f.title.trim(), email: f.email.trim() } : u)));
-    log("Profile updated", me.username); toast("Profile saved.");
+    setErr(""); api("/api/auth/profile", { ...f, name: f.name.trim(), title: f.title.trim(), email: f.email.trim() }, "PATCH").then((d) => { onUser(d.user); log("Profile updated", me.username); toast("Profile saved."); }).catch((e) => setErr(e.message));
   };
   const strength = (s) => [s.length >= 8, /[A-Za-z]/.test(s) && /\d/.test(s), /[A-Z]/.test(s) && /[a-z]/.test(s), /[^A-Za-z0-9]/.test(s), s.length >= 12].filter(Boolean).length;
   const st = strength(pw.next);
   const changePw = () => {
     if (!pw.cur) return setPwErr("Enter your current password.");
-    if (pw.cur !== me.password) return setPwErr("Current password is incorrect.");
     if (!pwOk(pw.next)) return setPwErr("New password must be at least 8 characters with letters and numbers.");
     if (pw.next === pw.cur) return setPwErr("New password must be different from the current one.");
     if (pw.next !== pw.again) return setPwErr("The new passwords do not match.");
-    setPwErr(""); setUsers((l) => l.map((u) => (u.id === me.id ? { ...u, password: pw.next, pwChanged: new Date().toLocaleString() } : u)));
-    log("Password changed", me.username); toast("Password changed."); setPw({ cur: "", next: "", again: "" });
+    setPwErr(""); api("/api/auth/password", { current: pw.cur, next: pw.next }).then((d) => { onUser(d.user); toast("Password changed."); setPw({ cur: "", next: "", again: "" }); }).catch((e) => setPwErr(e.message));
   };
-  const pickTheme = (t) => { setTheme(t); setUsers((l) => l.map((u) => (u.id === me.id ? { ...u, theme: t } : u))); log("Preference changed", `theme → ${t}`); toast("Theme saved to your profile."); };
+  const pickTheme = (t) => { setTheme(t); api("/api/auth/profile", { theme: t }, "PATCH").then((d) => { onUser(d.user); toast("Theme saved to your profile."); }).catch((e) => toast(e.message, "error")); };
   const tabs = [["profile", "Profile"], ["security", "Security"], ["prefs", "Preferences"]];
   return (
     <Panel title="MY PROFILE" right={<span>{me.username} · {ROLES[me.role]}</span>}>
@@ -2473,10 +2562,11 @@ function ProfileModule({ me, setUsers, theme, setTheme, startTab }) {
           <F label="Email"><input className={inp()} type="email" placeholder="name@example.com" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} /></F>
           <F label="Mobile no."><input className={inp()} inputMode="numeric" maxLength={11} placeholder="09XXXXXXXXX" value={f.mobile} onChange={(e) => setF({ ...f, mobile: e.target.value.replace(/\D/g, "") })} /></F>
           {clinical ? <F label="PRC license no."><input className={inp()} inputMode="numeric" value={f.prc} onChange={(e) => setF({ ...f, prc: e.target.value.replace(/\D/g, "") })} /></F> : <F label="Role"><div className="px-3 py-2 text-sm bg-slate-50 rounded-lg border border-slate-200 text-slate-500">{ROLES[me.role]} <span className="text-[10px]">(set by admin)</span></div></F>}
+          {me.role === "doctor" && <><F label="PTR no. (for ePresS)"><input className={inp()} value={f.ptr} onChange={(e) => setF({ ...f, ptr: e.target.value.toUpperCase() })} /></F><F label="S2 license no. (for ePresS)"><input className={inp()} value={f.s2} onChange={(e) => setF({ ...f, s2: e.target.value.toUpperCase() })} /></F></>}
         </div>
         <F label="Avatar color"><div className="flex flex-wrap gap-2">{AVATAR_COLORS.map(([c, l]) => <button key={l} type="button" title={l} aria-label={`Avatar color ${l}`} onClick={() => setF({ ...f, color: c })} className={`w-8 h-8 rounded-full border-2 ${f.color === c ? "border-slate-800 scale-110" : "border-white shadow"}`} style={{ background: c || "var(--accent)" }} />)}</div></F>
         {err && <Notice>{err}</Notice>}
-        <div className="flex gap-2"><Btn v="green" disabled={!dirty} onClick={saveProfile}>Save profile</Btn><Btn v="white" disabled={!dirty} onClick={() => { setF({ name: me.name, title: me.title || "", email: me.email || "", mobile: me.mobile || "", prc: me.prc || "", color: me.color || "" }); setErr(""); }}>Cancel</Btn></div>
+        <div className="flex gap-2"><Btn v="green" disabled={!dirty} onClick={saveProfile}>Save profile</Btn><Btn v="white" disabled={!dirty} onClick={() => { setF({ name: me.name, title: me.title || "", email: me.email || "", mobile: me.mobile || "", prc: me.prc || "", ptr: me.ptr || "", s2: me.s2 || "", color: me.color || "" }); setErr(""); }}>Cancel</Btn></div>
       </div>}
       {tab === "security" && <div className="max-w-md space-y-3">
         <F label="Current password" req><input type={show ? "text" : "password"} autoComplete="current-password" className={inp()} value={pw.cur} onChange={(e) => setPw({ ...pw, cur: e.target.value })} /></F>
@@ -2497,15 +2587,13 @@ function ProfileModule({ me, setUsers, theme, setTheme, startTab }) {
 }
 const initials = (n) => n.replace(/^(Dr\.|Dra\.)\s*/i, "").split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join("").toUpperCase();
 
-function LoginScreen({ users, onLogin }) {
-  const [u, setU] = useState(""), [p, setP] = useState(""), [err, setErr] = useState("");
+function LoginScreen({ onLogin, notice }) {
+  const [u, setU] = useState(""), [p, setP] = useState(""), [err, setErr] = useState(notice || ""), [busy, setBusy] = useState(false);
   const submit = (e) => {
     e.preventDefault();
     if (!u.trim() || !p) return setErr("Enter your username and password.");
-    const acct = users.find((x) => x.username.toLowerCase() === u.trim().toLowerCase());
-    if (!acct || acct.password !== p) return setErr("Incorrect username or password.");
-    if (!acct.active) return setErr("This account is deactivated. Contact your administrator.");
-    setErr(""); onLogin(acct);
+    setBusy(true); setErr("");
+    api("/api/auth/login", { username: u.trim(), password: p }).then((d) => onLogin(d.user)).catch((x) => { setErr(x.message); setBusy(false); });
   };
   return (
     <div className="theme-sunga min-h-screen flex items-center justify-center bg-slate-50 p-4">
@@ -2519,18 +2607,15 @@ function LoginScreen({ users, onLogin }) {
           <F label="Password"><input type="password" className={inp()} autoComplete="current-password" value={p} onChange={(e) => setP(e.target.value)} /></F>
         </div>
         {err && <div className="mt-3"><Notice>{err}</Notice></div>}
-        <button type="submit" className="mt-5 w-full py-2.5 rounded-lg text-sm font-semibold text-white bg-[var(--accent)] hover:bg-[var(--accent-h)]">Sign in</button>
-        <details className="mt-5 text-xs text-slate-500">
-          <summary className="cursor-pointer">Demo accounts (mock only)</summary>
-          <table className="mt-2 w-full"><tbody>{SEED_USERS.map((x) => <tr key={x.id}><td className="py-0.5 pr-2">{ROLES[x.role]}</td><td className="font-mono">{x.username}</td><td className="font-mono pl-2">{x.password}</td></tr>)}</tbody></table>
-        </details>
+        <button type="submit" disabled={busy} className="mt-5 w-full py-2.5 rounded-lg text-sm font-semibold text-white bg-[var(--accent)] hover:bg-[var(--accent-h)] disabled:opacity-60">{busy ? "Signing in…" : "Sign in"}</button>
+        <p className="mt-4 text-[11px] text-center text-slate-400">Sessions end after 30 minutes without activity. 5 wrong passwords lock the account for 5 minutes.</p>
       </form>
     </div>
   );
 }
 
 const BLANK_USER = { name: "", username: "", role: "", password: "" };
-function UsersModule({ users, setUsers, me }) {
+function UsersModule({ users, onUser, me }) {
   const toast = useToast(), log = useLog();
   const [f, setF] = useState(BLANK_USER); const [err, setErr] = useState("");
   const [reset, setReset] = useState(null); const [pw, setPw] = useState(""); const [pwErr, setPwErr] = useState("");
@@ -2543,26 +2628,25 @@ function UsersModule({ users, setUsers, me }) {
     if (!f.role) return setErr("Select a role.");
     if (!canManage(me.role, f.role)) return setErr("You cannot create an account with that role.");
     if (!pwRule(f.password)) return setErr("Password must be at least 8 characters with letters and numbers.");
-    setErr(""); setUsers((l) => [...l, { ...f, id: nid(), active: true }]);
-    log("User created", `${f.username} (${ROLES[f.role]})`); toast("Account created."); setF(BLANK_USER);
+    setErr(""); api("/api/users", f).then((d) => { onUser(d.user); toast("Account created."); setF(BLANK_USER); }).catch((e) => setErr(e.message));
   };
   const toggle = (x) => {
     if (x.id === me.id) return toast("You cannot deactivate your own account.", "error");
     if (x.active && x.role === "superadmin" && users.filter((y) => y.role === "superadmin" && y.active).length === 1) return toast("At least one active Super Admin is required.", "error");
-    setUsers((l) => l.map((y) => (y.id === x.id ? { ...y, active: !y.active } : y))); log(x.active ? "User deactivated" : "User activated", x.username);
+    api("/api/users", { id: x.id, active: !x.active }, "PATCH").then((d) => { onUser(d.user); toast(d.user.active ? "Account activated." : "Account deactivated."); }).catch((e) => toast(e.message, "error"));
   };
   const changeRole = (x, role) => {
     if (x.id === me.id) return toast("You cannot change your own role.", "error");
     if (x.role === "superadmin" && role !== "superadmin" && users.filter((y) => y.role === "superadmin" && y.active).length === 1) return toast("At least one active Super Admin is required.", "error");
-    setUsers((l) => l.map((y) => (y.id === x.id ? { ...y, role } : y))); log("Role changed", `${x.username} → ${ROLES[role]}`); toast("Role updated.");
+    api("/api/users", { id: x.id, role }, "PATCH").then((d) => { onUser(d.user); toast("Role updated."); }).catch((e) => toast(e.message, "error"));
   };
   const doReset = () => {
     if (!pwRule(pw)) return setPwErr("Password must be at least 8 characters with letters and numbers.");
-    setUsers((l) => l.map((y) => (y.id === reset.id ? { ...y, password: pw } : y))); log("Password reset", reset.username); toast("Password updated."); setReset(null); setPw(""); setPwErr("");
+    api("/api/users", { id: reset.id, password: pw }, "PATCH").then((d) => { onUser(d.user); toast("Password updated. The user must sign in again."); setReset(null); setPw(""); setPwErr(""); }).catch((e) => setPwErr(e.message));
   };
   return (
     <Paged>
-      <Notice kind="info">Mock accounts held in browser memory only: they reset when the page reloads, and passwords are not encrypted. A real deployment needs server-side login and a database.</Notice>
+      <Notice kind="info">Accounts are stored on the server with encrypted (hashed) passwords. Deactivating an account, changing its role or resetting its password signs that user out immediately.</Notice>
       <Panel title="USER ACCOUNTS">
         <Table cols={["Name", "Username", "Role", "Status", "Actions"]} rows={users.map((x) => {
           const m = canManage(me.role, x.role) || x.id === me.id;
@@ -2597,8 +2681,9 @@ function UsersModule({ users, setUsers, me }) {
 
 
 export default function EKonsultaApp() {
-  const [users, setUsers] = useState(SEED_USERS);
-  const [me, setMe] = useState(null);
+  const [users, setUsers] = useState([]);
+  const [me, setMe] = useState(null); const [boot, setBoot] = useState("checking"); const [loginNote, setLoginNote] = useState(""); const [saveState, setSaveState] = useState("saved");
+  const synced = useRef({ clients: new Map(), payments: new Map(), clinic: null, ready: false });
   const [clients, setClients] = useState(SEED);
   const [clinic, setClinic] = useState(INITIAL_CLINIC);
   const [audit, setAudit] = useState([]);
@@ -2612,8 +2697,52 @@ export default function EKonsultaApp() {
   const [sync, setSync] = useState(null);
   const timer = useRef(null);
   const toast = (message, type = "ok") => { setToastMsg({ message, type }); clearTimeout(timer.current); timer.current = setTimeout(() => setToastMsg(null), 3000); };
-  const log = (action, detail = "") => setAudit((p) => [{ ts: new Date().toLocaleString(), user: me ? me.username : "-", action, detail }, ...p].slice(0, 200));
+  const log = (action, detail = "") => { setAudit((p) => [{ ts: new Date().toLocaleString(), user: me ? me.username : "-", action, detail }, ...p].slice(0, 500)); api("/api/audit", { action, detail }).catch(() => {}); };
   useEffect(() => () => clearTimeout(timer.current), []);
+  // ---- server data: load, save changed records, pull other users' changes ----
+  const ended = (msg) => { synced.current.ready = false; setMe(null); setLoginNote(msg || "Your session ended. Please sign in again."); setPage("home"); };
+  const applyServer = (d, first) => {
+    const S = synced.current;
+    const mergeList = (setter, map, list) => setter((loc) => {
+      const byId = new Map(loc.map((x) => [x.id, x])); let changed = first;
+      for (const r of list) { const l = byId.get(r.id); if (first || !l || l === map.get(r.id)) { if (l !== r) { byId.set(r.id, r); changed = true; } map.set(r.id, r); } }
+      return changed ? (first ? list : [...byId.values()]) : loc;
+    });
+    if (first) { S.clients = new Map(); S.payments = new Map(); }
+    mergeList(setClients, S.clients, d.clients || []);
+    if (d.payments && (d.payments.length || first)) mergeList(setPayments, S.payments, d.payments);
+    if (d.clinic) setClinic((loc) => { if (first || loc === S.clinic) { S.clinic = d.clinic; return d.clinic; } return loc; });
+    else if (first) S.clinic = null;
+    setAudit(d.audit || []); setUsers(d.users || []);
+    const ids = (d.clients || []).flatMap((c) => [c.id, ...(c.labs || []).map((l) => l.id), ...(c.referrals || []).map((x) => x.id)]).concat((d.payments || []).map((p) => p.id)).filter((x) => typeof x === "number");
+    uid = Math.max(uid, ...ids, 100);
+  };
+  const loadData = async () => {
+    let d = await api("/api/data");
+    if (d.empty) { await api("/api/data", { seed: { clients: SEED, clinic: INITIAL_CLINIC, payments: SEED_PAYMENTS } }); d = await api("/api/data"); }
+    applyServer(d, true); synced.current.ready = true;
+  };
+  const onLogin = async (u) => { setLoginNote(""); setMe(u); setTheme(u.theme || "sunga"); setUserMenu(false); setPage("home"); try { await loadData(); } catch (e) { e.status === 401 ? ended() : toast(e.message, "error"); } };
+  useEffect(() => { api("/api/auth/me").then((d) => d.user && onLogin(d.user)).catch(() => {}).finally(() => setBoot("done")); }, []);
+  const saveTimer = useRef(null);
+  useEffect(() => {
+    const S = synced.current; if (!S.ready || !me) return;
+    const ch = clients.filter((c) => S.clients.get(c.id) !== c), rm = [...S.clients.keys()].filter((id) => !clients.some((c) => c.id === id));
+    const pch = can(me.role, "pay") ? payments.filter((p) => S.payments.get(p.id) !== p) : [];
+    const cl = clinic !== S.clinic && ["superadmin", "admin", "encoder"].includes(me.role) ? clinic : null;
+    if (!ch.length && !rm.length && !pch.length && !cl) return;
+    ch.forEach((c) => S.clients.set(c.id, c)); rm.forEach((id) => S.clients.delete(id)); pch.forEach((p) => S.payments.set(p.id, p)); if (cl) S.clinic = cl;
+    setSaveState("saving"); clearTimeout(saveTimer.current);
+    api("/api/data", { ...(ch.length ? { clients: ch } : {}), ...(rm.length ? { removedClients: rm } : {}), ...(pch.length ? { payments: pch } : {}), ...(cl ? { clinic: cl } : {}) })
+      .then(() => { saveTimer.current = setTimeout(() => setSaveState("saved"), 300); })
+      .catch((e) => { if (e.status === 401) return ended(); setSaveState("error"); ch.forEach((c) => S.clients.delete(c.id)); toast("Not saved: " + e.message, "error"); });
+  }, [clients, payments, clinic, me]);
+  useEffect(() => {
+    if (!me) return;
+    const t = setInterval(() => { if (synced.current.ready && document.visibilityState === "visible") api("/api/data").then((d) => applyServer(d, false)).catch((e) => { if (e.status === 401) ended("Your session expired after 30 minutes without activity. Please sign in again."); }); }, 15000);
+    return () => clearInterval(t);
+  }, [me && me.id]);
+  const onUser = (u) => { setUsers((l) => (l.some((x) => x.id === u.id) ? l.map((x) => (x.id === u.id ? { ...x, ...u } : x)) : [...l, u])); if (me && u.id === me.id) setMe((m) => ({ ...m, ...u })); };
   const go = (p) => { setPage(p); setThemeMenu(false); setUserMenu(false); };
   const runSync = () => {
     const gate = gateReason(clinic);
@@ -2631,10 +2760,10 @@ export default function EKonsultaApp() {
     setTimeout(tick, 300);
   };
   const cst = clinicStatus(clinic);
-  const login = (acct) => { const ts = new Date().toLocaleString(); setUsers((l) => l.map((u) => (u.id === acct.id ? { ...u, lastLogin: ts } : u))); setTheme(acct.theme || "sunga"); setUserMenu(false); setMe(acct); setPage("home"); setAudit((p) => [{ ts: new Date().toLocaleString(), user: acct.username, action: "Signed in", detail: ROLES[acct.role] }, ...p]); };
-  const logout = () => { log("Signed out", ""); setMe(null); setPage("home"); };
-  const current = me && users.find((u) => u.id === me.id);
-  if (!current || !current.active) return <LoginScreen users={users} onLogin={login} />;
+  const logout = () => { api("/api/auth/logout", {}).catch(() => {}).finally(() => { synced.current.ready = false; setMe(null); setLoginNote(""); setPage("home"); setUserMenu(false); }); };
+  const current = me;
+  if (boot === "checking") return <div className="min-h-screen flex items-center justify-center text-sm text-slate-500">Loading…</div>;
+  if (!current) return <LoginScreen key={loginNote} onLogin={onLogin} notice={loginNote} />;
   const role = current.role;
   const allowed = can(role, page);
   return (
@@ -2654,6 +2783,8 @@ export default function EKonsultaApp() {
                 <button type="button" onClick={() => setThemeMenu(!themeMenu)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 text-xs font-medium hover:bg-slate-50"><Palette size={14} className="text-[var(--accent)]" /><span className="hidden md:inline">{THEMES.find((t) => t.id === theme).name}</span><ChevronDown size={12} /></button>
                 {themeMenu && <div className="absolute right-0 mt-1 w-48 max-h-80 overflow-y-auto bg-white border border-slate-200 rounded-xl shadow-lg py-1 z-40">{THEMES.map((t) => <button key={t.id} type="button" onClick={() => { setTheme(t.id); setThemeMenu(false); }} className="w-full flex items-center justify-between px-3 py-2 text-xs hover:bg-slate-50">{t.name}{theme === t.id && <CheckIcon size={14} className="text-[var(--accent)]" />}</button>)}</div>}
               </div>
+              {current.defaultPw && <button type="button" onClick={() => { setProfileTab("security"); go("profile"); }} title="You are using a default or temporary password. Change it so no one else can sign in as you." className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-semibold bg-amber-100 text-amber-800 hover:bg-amber-200"><KeyRound size={13} /><span className="hidden lg:inline">Change default password</span></button>}
+              <span title="Changes are saved to the server database automatically" className={`hidden md:inline text-[11px] ${saveState === "error" ? "text-rose-600" : "text-slate-400"}`}>{saveState === "saving" ? "Saving…" : saveState === "error" ? "Not saved" : "All changes saved"}</span>
               {can(role, "sub") && <button type="button" onClick={runSync} className="hidden sm:flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-semibold text-white bg-[var(--accent)] hover:bg-[var(--accent-h)]"><UploadCloud size={14} />Submit ready records</button>}
               <div className="relative flex items-center gap-1">
                 <button type="button" aria-label="Open profile menu" aria-expanded={userMenu} onClick={() => setUserMenu(!userMenu)} className="flex items-center gap-2 rounded-xl pl-1 pr-2 py-1 hover:bg-slate-100"><Avatar u={current} /><div className="hidden lg:block leading-tight text-left"><div className="text-xs font-semibold">{current.name}</div><div className="text-[10px] text-slate-500">{ROLES[role]}</div></div><ChevronDown size={12} className="text-slate-400" /></button>
@@ -2695,15 +2826,15 @@ export default function EKonsultaApp() {
               {page === "reg" && <RegistrationModule clients={clients} setClients={setClients} go={go} role={role} />}
               {page === "hsa" && <HSAModule clients={clients} setClients={setClients} />}
               {page === "consult" && <ConsultModule clients={clients} setClients={setClients} clinic={clinic} />}
-              {page === "diag" && <DiagnosticsModule clients={clients} setClients={setClients} clinic={clinic} />}
+              {page === "diag" && <DiagnosticsModule clients={clients} setClients={setClients} clinic={clinic} users={users} />}
               {page === "med" && <MedicineModule clients={clients} setClients={setClients} />}
               {page === "pay" && <PaymentsModule payments={payments} setPayments={setPayments} clients={clients} setClients={setClients} me={current} />}
               {page === "sub" && <SubmissionModule clients={clients} setClients={setClients} clinic={clinic} />}
-              {page === "audit" && <AuditModule clients={clients} setClients={setClients} clinic={clinic} audit={audit} />}
+              {page === "audit" && <AuditModule clients={clients} setClients={setClients} clinic={clinic} audit={audit} users={users} />}
               {page === "upl" && <UploaderModule />}
-              {page === "users" && <UsersModule users={users} setUsers={setUsers} me={current} />}
+              {page === "users" && <UsersModule users={users} onUser={onUser} me={current} />}
               {page === "kb" && <KnowledgeModule me={current} />}
-              {page === "profile" && <ProfileModule key={current.id + profileTab} me={current} setUsers={setUsers} theme={theme} setTheme={setTheme} startTab={profileTab} />}
+              {page === "profile" && <ProfileModule key={current.id + profileTab} me={current} onUser={onUser} theme={theme} setTheme={setTheme} startTab={profileTab} />}
               </>}
             </div>
           </main>

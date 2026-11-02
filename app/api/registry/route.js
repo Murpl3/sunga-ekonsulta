@@ -1,3 +1,4 @@
+import * as db from "@/lib/store";
 // Registry connector: client registration, empanelment and consents come from the partner
 // registration website. This route fetches the client list from that site's API (server-side).
 //
@@ -15,7 +16,7 @@ const pick = (o, ...keys) => { for (const k of keys) { const hit = Object.keys(o
 const ymd = (v) => { if (!v) return ""; const s = String(v); if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10); const d = new Date(s); return isNaN(d) ? "" : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
 const yes = (v) => v === true || /^(y|yes|true|1|done|verified|empanelled|empaneled|signed)$/i.test(String(v).trim());
 function normalize(o) {
-  const typeRaw = String(pick(o, "type", "patienttype", "membertype", "category")).toUpperCase();
+  const typeRaw = String(pick(o, "type", "patienttype", "membertype", "clienttype")).toUpperCase();
   // Check non-member first ("NON-MEMBER" also ends with "MEMBER").
   const type = /^NM$|NON/.test(typeRaw) ? "NM" : /^DD$|DEPEND/.test(typeRaw) ? "DD" : /^MM$|MEMBER/.test(typeRaw) ? "MM" : "NM";
   const sexRaw = String(pick(o, "sex", "gender")).toUpperCase();
@@ -31,29 +32,34 @@ function normalize(o) {
     empanelled: yes(pick(o, "empanelled", "empaneled", "empanelmentstatus", "yes", "empanelment")), empanelDate: ymd(pick(o, "empanelmentdate", "empanelleddate", "empaneleddate")),
     pcu: String(pick(o, "pcu", "primarycareunit", "pcprovider", "facility")),
     consent: yes(pick(o, "consent", "dataprivacyconsent", "consentsigned")), loa: yes(pick(o, "loa", "letterofauthorization")),
+    caseNo: String(pick(o, "caseno", "casenumber", "hcicaseno", "konsultacaseno")).trim(),
+    category: String(pick(o, "membershipcategory", "membercategory", "memcategory", "memcat")).trim(),
+    member: { pin: String(pick(o, "memberpin", "principalpin", "mempin")).trim(), last: String(pick(o, "memberlastname", "principallastname", "memlastname")).trim().toUpperCase(), first: String(pick(o, "memberfirstname", "principalfirstname", "memfirstname")).trim().toUpperCase(), middle: String(pick(o, "membermiddlename", "principalmiddlename", "memmiddlename")).trim().toUpperCase(), rel: String(pick(o, "relationship", "relationtomember", "dependentrelationship")).trim().toUpperCase() },
   };
 }
 function demo() {
   const today = new Date(); const d = (n) => { const x = new Date(today); x.setDate(x.getDate() - n); return x.toISOString().slice(0, 10); };
   const base = { province: "DAVAO DEL SUR", municipality: "DIGOS CITY", pcu: "Sunga Hospital PCU", consent: "yes", loa: "yes" };
   return [
-    { id: "R-0001", philhealth_pin: "12-050007919-1", last_name: "Dela Cruz", first_name: "Juan", middle_name: "Santos", birth_date: "1968-03-14", sex: "Male", type: "Member", barangay: "Zone 1", registration_date: d(60), empanelled: "yes", empanelment_date: d(58), ...base },
+    { id: "R-0001", case_no: "TP110363202025091110550001", membership_category: "Senior Citizen", philhealth_pin: "12-050007919-1", last_name: "Dela Cruz", first_name: "Juan", middle_name: "Santos", birth_date: "1968-03-14", sex: "Male", type: "Member", barangay: "Zone 1", registration_date: d(60), empanelled: "yes", empanelment_date: d(58), ...base },
     { id: "R-0002", philhealth_pin: "12-050015838-2", last_name: "Reyes", first_name: "Maria", middle_name: "Garcia", birth_date: "1975-07-22", sex: "Female", type: "Member", barangay: "Zone 1", registration_date: d(40), empanelled: "no", ...base },
     { id: "R-0003", philhealth_pin: "12-050023757-3", last_name: "Bautista", first_name: "Pedro", middle_name: "Lim", birth_date: "1990-11-02", sex: "Male", type: "Member", barangay: "Zone 1", registration_date: d(30), empanelled: "yes", empanelment_date: d(29), ...base },
-    { id: "R-0004", philhealth_pin: "12-050031676-4", last_name: "Aquino", first_name: "Liza", middle_name: "Mendoza", birth_date: "2016-05-30", sex: "Female", type: "Dependent", barangay: "Zone 1", registration_date: d(25), empanelled: "yes", empanelment_date: d(25), ...base },
+    { id: "R-0004", philhealth_pin: "12-050031676-4", last_name: "Aquino", first_name: "Liza", middle_name: "Mendoza", birth_date: "2016-05-30", sex: "Female", type: "Dependent", member_pin: "12-050031600-1", member_last_name: "Aquino", member_first_name: "Roberto", member_middle_name: "Santos", relationship: "Child", membership_category: "Employed Private", barangay: "Zone 1", registration_date: d(25), empanelled: "yes", empanelment_date: d(25), ...base },
     { id: "R-0005", philhealth_pin: "12-050039595-5", last_name: "Castillo", first_name: "Ramon", middle_name: "Tan", birth_date: "1959-01-09", sex: "Male", type: "Member", barangay: "Zone 1", registration_date: d(20), empanelled: "yes", empanelment_date: d(19), ...base },
     { id: "R-0006", philhealth_pin: "", last_name: "Villanueva", first_name: "Ana", middle_name: "Cruz", birth_date: "1984-09-18", sex: "Female", type: "Non-Member", barangay: "Zone 1", registration_date: d(15), empanelled: "no", ...base },
     { id: "R-0007", philhealth_pin: "12-345678901-2", last_name: "Santos", first_name: "Carmen", middle_name: "Lopez", birth_date: "1980-05-10", sex: "Female", type: "Member", barangay: "Zone 2", registration_date: d(2), empanelled: "yes", empanelment_date: d(1), ...base },
     { id: "R-0008", philhealth_pin: "12-345678902-0", last_name: "Mendoza", first_name: "Jose", middle_name: "Ramos", birth_date: "1972-12-03", sex: "Male", type: "Member", barangay: "Matti", registration_date: d(1), empanelled: "yes", empanelment_date: d(1), ...base },
-    { id: "R-0009", philhealth_pin: "12-345678903-9", last_name: "Garcia", first_name: "Rosa", middle_name: "Tan", birth_date: "1995-02-14", sex: "Female", type: "Dependent", barangay: "San Jose", registration_date: d(0), empanelled: "no", ...base },
+    { id: "R-0009", philhealth_pin: "12-345678903-9", last_name: "Garcia", first_name: "Rosa", middle_name: "Tan", birth_date: "1995-02-14", sex: "Female", type: "Dependent", member_pin: "12-345678904-7", member_last_name: "Garcia", member_first_name: "Luis", member_middle_name: "Tan", relationship: "Spouse", membership_category: "Self-Earning Individual", barangay: "San Jose", registration_date: d(0), empanelled: "no", ...base },
   ];
 }
 
-export async function GET() {
+export async function GET(req) {
+  const me = await db.current(req); if (!me) return db.deny();
   return Response.json({ mode: process.env.REGISTRY_URL ? "live" : "demo", name: process.env.REGISTRY_NAME || "Partner registration site" });
 }
 
-export async function POST() {
+export async function POST(req) {
+  const me = await db.current(req); if (!me) return db.deny();
   let raw;
   if (!process.env.REGISTRY_URL) raw = demo();
   else {

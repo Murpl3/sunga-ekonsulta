@@ -1,6 +1,7 @@
+import * as db from "@/lib/store";
 // Long-term memory for the YAKAP Assistant.
 // Saved per user as JSON files in <project>/data/memory (or MEMORY_DIR if set).
-// Mock app: the username comes from the browser and is not verified server-side.
+// Only the signed-in user can read or write their own memory.
 import { promises as fs } from "fs";
 import path from "path";
 
@@ -16,14 +17,18 @@ async function load(u) {
 }
 
 export async function GET(req) {
+  const me = await db.current(req); if (!me) return db.deny();
   const u = new URL(req.url).searchParams.get("user");
+  if (String(u).toLowerCase() !== me.username.toLowerCase()) return db.deny("Not allowed.", 403);
   if (!okUser(u)) return Response.json({ error: "Invalid user." }, { status: 400 });
   return Response.json(await load(u));
 }
 
 export async function POST(req) {
+  const me = await db.current(req); if (!me) return db.deny();
   let b; try { b = await req.json(); } catch { return Response.json({ error: "Invalid request." }, { status: 400 }); }
   if (!okUser(b.user)) return Response.json({ error: "Invalid user." }, { status: 400 });
+  if (b.user.toLowerCase() !== me.username.toLowerCase()) return db.deny("Not allowed.", 403);
   const cur = await load(b.user);
   const history = Array.isArray(b.history)
     ? b.history.filter((m) => m && (m.from === "me" || m.from === "bot") && typeof m.text === "string").slice(-MAX_HISTORY)

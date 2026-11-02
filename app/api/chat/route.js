@@ -1,3 +1,4 @@
+import * as db from "@/lib/store";
 // Optional AI answers for the in-app assistant.
 // Enable by creating .env.local next to package.json with:
 //   ANTHROPIC_API_KEY=your-key
@@ -13,11 +14,13 @@ Do not diagnose or give treatment decisions; clinical decisions belong to the at
 The context may include "memoryNotes": facts this user previously asked you to remember. Use them when relevant and treat them as the user's own notes. The conversation history is restored from earlier sessions.
 "sharedKnowledge" holds answers the clinic taught the assistant (learned from all accounts); prefer them when they fit the question.`;
 
-export async function GET() {
+export async function GET(req) {
+  const me = await db.current(req); if (!me) return db.deny();
   return Response.json({ enabled: Boolean(process.env.ANTHROPIC_API_KEY) });
 }
 
 export async function POST(req) {
+  const me = await db.current(req); if (!me) return db.deny();
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) return Response.json({ error: "AI answers are not enabled on this server." }, { status: 503 });
   let body;
