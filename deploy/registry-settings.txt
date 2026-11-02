@@ -1,0 +1,34 @@
+REGISTRATION SITE CONNECTOR (for IT / the partner website developer)
+==================================================================
+Clients, empanelment (YES), PCU and consents are managed on the partner
+registration website. The "Sync clients" button on Registered Clients pulls the
+client list from that site.
+
+What the partner site must provide
+----------------------------------
+An HTTPS address that returns JSON - either a list  [ {...}, {...} ]
+or  { "clients": [ ... ] }.  Each client should have (names are flexible,
+e.g. last_name / lastName both work):
+
+  id, philhealth_pin, last_name, first_name, middle_name, extension,
+  birth_date (YYYY-MM-DD), sex (M/F), type (Member / Dependent / Non-Member),
+  civil_status, mobile, province, municipality, barangay, zip,
+  registration_date, empanelled (yes/no), empanelment_date, pcu,
+  consent (yes/no), loa (yes/no)
+
+Required for each client: last name, first name, birth date.
+Clients are matched by PhilHealth PIN (or name + birth date when there is no PIN),
+so syncing again updates them instead of creating duplicates.
+
+Settings on this laptop
+-----------------------
+Add these lines to  C:\Yakap\ekonsulta-next\.env.local  (create the file in
+Notepad, Save as type: All files), then run C:\Yakap\rebuild.bat:
+
+REGISTRY_NAME="Friend registration site"
+REGISTRY_URL=https://partner-site.example/api/clients
+REGISTRY_API_KEY="the-key-from-the-partner-site"
+
+The key is sent as:  Authorization: Bearer <key>
+Without REGISTRY_URL the app shows a DEMO client list.
+After rebuilding, the badge on Registered Clients changes to "Connected".

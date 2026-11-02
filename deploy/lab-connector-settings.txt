@@ -1,0 +1,35 @@
+LABORATORY CONNECTOR SETTINGS (for IT)
+======================================
+The "Get results from laboratory" button reads results from the laboratory
+system's database and matches patients by NAME + BIRTHDATE.
+
+1. Create a READ-ONLY database account for the laboratory database
+   (SELECT permission only).
+
+2. In Notepad, create a file named  .env.local  inside
+   C:\Yakap\ekonsulta-next   (Save as type: All files) containing:
+
+LAB_DB_TYPE=mysql
+LAB_DB_HOST=192.168.1.20
+LAB_DB_PORT=3306
+LAB_DB_USER=readonly_user
+LAB_DB_PASSWORD="your-password"
+LAB_DB_NAME=lis
+LAB_DB_QUERY=SELECT p.patient_id, r.test_name, r.result_value AS result, r.unit, r.result_date FROM results r JOIN patients p ON p.patient_id = r.patient_id WHERE UPPER(p.last_name) = :last AND UPPER(p.first_name) = :first AND p.birth_date = :dob AND r.result_date >= :since
+LAB_DB_PATIENT_QUERY=SELECT patient_id FROM patients WHERE UPPER(last_name) = :last AND UPPER(first_name) = :first AND birth_date = :dob
+
+   - For Microsoft SQL Server use LAB_DB_TYPE=mssql and port 1433.
+   - Change the table/column names in the two queries to match YOUR lab system.
+     The results query must return: test_name, result, result_date
+     (optional: unit, patient_id). Keep the :last :first :dob :since placeholders.
+   - Put the password in double quotes (needed if it contains # or spaces).
+   - If any of the LAB_DB_ lines are missing, the app uses a DEMO lab.
+
+3. Double-click C:\Yakap\rebuild.bat. In Diagnostics & Referral the badge
+   should change to "Connected: lab database".
+
+Test names are recognised automatically (e.g. "FBS", "Fasting Blood Sugar",
+"CBC", "HbA1c", "Total Cholesterol", "HDL", "LDL", "Triglycerides",
+"Chest X-Ray", "Urinalysis", "Pap Smear", "Fecalysis", "Fecal Occult Blood",
+"Sputum AFB", "ECG", "Creatinine", "OGTT"). Tell the developer if your lab uses
+different names.

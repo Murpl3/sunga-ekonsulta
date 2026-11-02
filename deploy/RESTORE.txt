@@ -1,0 +1,24 @@
+HOW THE BACKUP WORKS
+====================
+- The website runs on this laptop (C:\Yakap). GitHub (Murpl3/sunga-ekonsulta) is the backup.
+- backup-to-github.bat   : uploads code + server scripts to GitHub, and saves a local copy
+                           of app data (chatbot memory, assistant knowledge) in C:\Yakap\backups
+- schedule-backup.bat     : run ONCE to back up automatically every day at 6:00 PM
+- Log: C:\Yakap\logs\backup.log
+- NOT uploaded to GitHub (on purpose): .env.local (passwords / API keys), the data folder,
+  node_modules. Keep a copy of .env.local somewhere safe (e.g. a USB drive).
+  Patient records live in the partner registration site / lab system, not in GitHub.
+
+RESTORE ON A NEW OR REPAIRED LAPTOP
+===================================
+1. Install Node.js LTS (nodejs.org) and Git (git-scm.com).
+2. Open PowerShell:
+     mkdir C:\Yakap
+     cd C:\Yakap
+     git clone https://github.com/Murpl3/sunga-ekonsulta.git ekonsulta-next
+     copy C:\Yakap\ekonsulta-next\deploy\*.bat C:\Yakap\
+     copy C:\Yakap\ekonsulta-next\deploy\*.txt C:\Yakap\
+3. Put your saved .env.local back into C:\Yakap\ekonsulta-next  (lab / registry / AI settings).
+4. Optional: unzip the newest C:\Yakap\backups\data-*.zip into C:\Yakap\ekonsulta-next\data
+5. Right-click C:\Yakap\setup-server.bat -> Run as administrator.
+6. Run C:\Yakap\schedule-backup.bat to turn the daily backup back on.

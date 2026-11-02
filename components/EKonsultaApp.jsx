@@ -1,7 +1,7 @@
 "use client";
 import React, { useState, useContext, createContext, useEffect, useRef } from "react";
 import {
-  ChevronDown, Search, Trash2, CheckCircle2, AlertTriangle, X, Upload, Home, UserPlus,
+  ChevronDown, MoreVertical, ListChecks, RefreshCw, Pencil, Download, Printer, Search, Trash2, CheckCircle2, AlertTriangle, X, Upload, Home, UserPlus,
   Stethoscope, ClipboardList, FlaskConical, Pill, FileText, ExternalLink, Plus, ChevronLeft, ChevronRight,
   Menu, Palette, Check as CheckIcon, Info, UploadCloud, ShieldCheck, Activity, Users, Clock, FileCheck,
   Wallet, KeyRound, LogOut, Lock, Bot, MessageCircle, BookOpen, ThumbsUp, ThumbsDown, Building2, FolderOpen, Server, HeartHandshake, Send, History, Share2,
@@ -10,6 +10,7 @@ import {
 /* ---------- constants ---------- */
 const HOSPITAL = "SUNGA HOSPITAL";
 const HOSPITAL_ADDR = "Digos City, Davao del Sur";
+const HOSPITAL_ACCNO = "P11036320"; // PhilHealth HCI accreditation no. (EMR Configuration → Provider / facility ID overrides it)
 // Official source: PhilHealth Circular "Clinical and Pharmaceutical Standards for PhilHealth YAKAP" (Annex A GAMOT drugs, Annex B dispensing limits).
 const GAMOT_URL = "https://www.philhealth.gov.ph/circulars/2025/PC2025-0013.pdf";
 const GAMOT_LIMITS_URL = "https://www.philhealth.gov.ph/circulars/2026/PC2026-0007.pdf";
@@ -232,12 +233,17 @@ function subStatus(c) {
   if (c.sub && c.sub.ack) return "Acknowledged";
   if (c.sub && c.sub.rejected) return "Validation Failed";
   if (c.sub && c.sub.submittedAt) return "Pending Acknowledgment";
+  if (c.sub && c.sub.batch) return "In Transmittal";
   return validateRecord(c).length ? "Validation Failed" : "Ready to Submit";
 }
 
+// Encoder / Super Admin may correct saved FPE and consultations until the record is sent to PhilHealth.
+const EDITORS = ["encoder", "superadmin"];
+const editLock = (c) => (c.sub && c.sub.ack ? "already acknowledged by PhilHealth" : c.sub && c.sub.submittedAt && !c.sub.rejected ? "already submitted (awaiting acknowledgment)" : "");
 const AppCtx = createContext({ toast: () => {}, log: () => {} });
 const useToast = () => useContext(AppCtx).toast;
 const useLog = () => useContext(AppCtx).log;
+const useMe = () => useContext(AppCtx).me || {};
 
 /* ---------- UI primitives ---------- */
 const BTN = {
@@ -444,8 +450,78 @@ function Stat({ icon: I, label, n, hint, tone }) {
     </div>
   );
 }
+// Management dashboard for Admin / Super Admin: no patient list (need-to-know), only claims, money, accreditation and system health.
+function AdminHome({ clients, go, clinic, role, me, payments, users }) {
+  const ym = todayISO().slice(0, 7);
+  const st = clinicStatus(clinic), blockers = clinicBlockers(clinic);
+  const t1m = clients.filter((c) => { const t = tranche1(c); return t.done && t.date.slice(0, 7) === ym; }).length;
+  const t2m = clients.filter((c) => { const t = tranche2(c); return t.done && t.date.slice(0, 7) === ym; }).length;
+  const earnedM = t1m * TRANCHE_RATE.t1 + t2m * TRANCHE_RATE.t2;
+  const notBilled = clients.flatMap((c) => [["t1", tranche1(c)], ["t2", tranche2(c)]].filter(([k, t]) => t.done && !(c.billed && c.billed[k])).map(([, t]) => t.amount)).reduce((a, x) => a + x, 0);
+  const sum = (arr, k) => arr.reduce((a, p) => a + (+p[k] || 0), 0);
+  const unpaid = payments.filter((p) => p.status !== "Payment Received");
+  const shortP = payments.filter((p) => p.status === "Payment Received" && p.received < p.expected);
+  const cnt = (s2) => clients.filter((c) => subStatus(c) === s2).length;
+  const backlog = cnt("Ready to Submit") + cnt("Pending Acknowledgment") + cnt("Validation Failed");
+  const expiring = [...clinic.docs.map((d) => [d.type, d.expires]), ...clinic.physicians.map((p) => ["PRC " + p.name, p.expiry])].filter(([, e]) => daysUntil(e) <= 60).sort((a, b) => a[1].localeCompare(b[1]));
+  const [sys, setSys] = useState({});
+  useEffect(() => {
+    if (role !== "superadmin") return;
+    const get = (u) => fetch(u).then((r) => r.json()).catch(() => null);
+    Promise.all([get("/api/lab-results"), get("/api/registry"), get("/api/chat"), get("/api/knowledge")]).then(([lab, reg, ai, kb]) => setSys({ lab, reg, ai, kb }));
+  }, [role]);
+  const hour = new Date().getHours(); const greet = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
+  const ACT = { users: ["User accounts", KeyRound], clinic: ["Accreditation", Building2], pay: ["Payments & reports", Wallet], sub: ["EMR submission", Send] };
+  const actions = (role === "superadmin" ? ["users", "clinic", "pay"] : ["pay", "sub", "clinic"]).map((pg) => [pg, ...ACT[pg]]);
+  const Card = ({ icon: I, n, label, hint, pg, tone }) => <button type="button" onClick={() => go(pg)} className="text-left bg-white border border-slate-200 rounded-2xl p-4 flex items-start gap-3 shadow-sm hover:border-[var(--accent)] transition-colors"><div className={`p-2 rounded-xl ${tone === "bad" ? "bg-rose-100 text-rose-600" : "bg-[var(--accent-soft)] text-[var(--accent)]"}`}><I size={18} /></div><div className="min-w-0"><div className="text-xl font-semibold leading-tight">{n}</div><div className="text-xs text-slate-500 mt-1">{label}</div><div className="text-[11px] text-slate-400 truncate">{hint}</div></div></button>;
+  const Row = ({ l, v, tone }) => <div className="flex justify-between gap-2 text-sm py-1 border-b border-slate-100 last:border-0"><span className="text-slate-600">{l}</span><span className={`font-medium ${tone === "bad" ? "text-rose-600" : tone === "ok" ? "text-emerald-600" : tone === "warn" ? "text-amber-600" : ""}`}>{v}</span></div>;
+  const conn = (x, liveKey, liveVal, label) => !x ? ["Unavailable", "bad"] : x[liveKey] === liveVal ? [label, "ok"] : ["Demo (not connected)", "warn"];
+  const panels = [
+    <Panel key="claims" title="CLAIMS & SUBMISSION" right={<button type="button" onClick={() => go("sub")} className="underline">Open</button>}>
+      <Row l="Ready to submit" v={cnt("Ready to Submit")} /><Row l="Pending acknowledgment" v={cnt("Pending Acknowledgment")} tone={cnt("Pending Acknowledgment") ? "warn" : ""} />
+      <Row l="Validation errors" v={cnt("Validation Failed")} tone={cnt("Validation Failed") ? "bad" : "ok"} /><Row l="Acknowledged" v={cnt("Acknowledged")} tone="ok" />
+      <Row l="Batches awaiting payment" v={`${unpaid.length} · ${peso(sum(unpaid, "expected"))}`} tone={unpaid.length ? "warn" : ""} /><Row l="Short-paid / denied" v={`${shortP.length} · ${peso(shortP.reduce((a, p) => a + p.expected - p.received, 0))}`} tone={shortP.length ? "bad" : "ok"} />
+    </Panel>,
+    <Panel key="acc" title="ACCREDITATION" right={<button type="button" onClick={() => go("clinic")} className="underline">Open</button>}>
+      <div className="flex items-center gap-2 mb-2"><div className="flex-1 h-2 rounded-full bg-slate-100 overflow-hidden"><div className="h-full bg-[var(--accent)]" style={{ width: readiness(clinic) + "%" }} /></div><span className="text-sm font-semibold">{readiness(clinic)}%</span></div>
+      <div className="mb-2"><Badge s={st} /></div>
+      <div className="text-xs text-slate-500 mb-1">Open items ({blockers.length})</div>
+      <ul className="text-xs text-slate-700 space-y-0.5 mb-2">{blockers.slice(0, 3).map((b) => <li key={b} className="truncate">• {b}</li>)}{blockers.length > 3 && <li className="text-slate-400">+{blockers.length - 3} more</li>}{!blockers.length && <li className="text-emerald-700">All internal items complete</li>}</ul>
+      <div className="text-xs text-slate-500 mb-1">Expiring within 60 days</div>
+      <ul className="text-xs space-y-0.5">{expiring.slice(0, 2).map(([n, e]) => <li key={n} className={`truncate ${daysUntil(e) < 0 ? "text-rose-600" : "text-amber-700"}`}>• {n}: {daysUntil(e) < 0 ? "expired" : `${daysUntil(e)} days left`}</li>)}{!expiring.length && <li className="text-emerald-700">Nothing expiring</li>}</ul>
+    </Panel>,
+    ...(role === "superadmin" ? [<Panel key="sys" title="SYSTEM HEALTH">
+      {(() => { const lab = conn(sys.lab, "mode", "database", `Connected (${sys.lab && sys.lab.type})`), reg = conn(sys.reg, "mode", "live", "Connected"), ai = !sys.ai ? ["Unavailable", "bad"] : sys.ai.enabled ? ["Enabled", "ok"] : ["Built-in answers only", "warn"];
+        return <><Row l="Laboratory database" v={lab[0]} tone={lab[1]} /><Row l="Registration site" v={reg[0]} tone={reg[1]} /><Row l="AI assistant" v={ai[0]} tone={ai[1]} />
+          <Row l="EMR connection" v={clinic.emr.connected ? "Tested" : "Not tested"} tone={clinic.emr.connected ? "ok" : "warn"} />
+          <Row l="Active user accounts" v={`${users.filter((u) => u.active).length} of ${users.length}`} />
+          <Row l="Assistant: unanswered questions" v={sys.kb ? sys.kb.unanswered.length : "—"} tone={sys.kb && sys.kb.unanswered.length ? "warn" : "ok"} /></>; })()}
+    </Panel>] : []),
+  ];
+  return (
+    <div className="space-y-4">
+      <div className="rounded-2xl p-5 text-white flex flex-col md:flex-row md:items-center justify-between gap-4" style={{ background: "var(--banner)" }}>
+        <div>
+          <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold tracking-wider uppercase bg-white/20 mb-2">{HOSPITAL} · Management</span>
+          <h2 className="text-xl font-bold tracking-tight">{greet}, {me.name}</h2>
+          <p className="text-sm opacity-80 mt-1">{ROLES[role]} · {headerDate()} · Clinic: {st} ({readiness(clinic)}% ready)</p>
+        </div>
+        <div className="flex gap-2 flex-wrap">{actions.map(([pg, label, I], k) => <button key={pg} type="button" onClick={() => go(pg)} className={`inline-flex items-center gap-2 font-medium px-4 py-2 rounded-xl text-sm ${k === 0 ? "bg-white text-slate-800 hover:bg-slate-100" : "bg-white/15 hover:bg-white/25"}`}><I size={14} />{label}</button>)}</div>
+      </div>
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <Card icon={Wallet} n={peso(earnedM)} label={`Tranches earned in ${new Date().toLocaleDateString("en-US", { month: "long" })}`} hint={`${t1m} × 1st (₱680) · ${t2m} × 2nd (₱1,020)`} pg="pay" />
+        <Card icon={FileText} n={peso(notBilled)} label="Earned, not yet billed" hint="Create a batch in Payments" pg="pay" tone={notBilled ? "" : ""} />
+        <Card icon={Clock} n={peso(sum(unpaid, "expected"))} label="Awaiting payment" hint={`${unpaid.length} batch(es) not yet paid`} pg="pay" />
+        <Card icon={Send} n={backlog} label="Submission backlog" hint={`${cnt("Validation Failed")} error(s) · ${cnt("Pending Acknowledgment")} pending ack`} pg="sub" tone={cnt("Validation Failed") ? "bad" : ""} />
+      </div>
+      <div className={`grid gap-4 ${role === "superadmin" ? "lg:grid-cols-3" : "lg:grid-cols-2"} [&>section]:mb-0`}>{panels}</div>
+    </div>
+  );
+}
+
 // Role-aware dashboard: each role sees its own work queue, counts and only the actions it is allowed to use.
-function HomeModule({ clients, go, clinic, onSync, role, me, payments }) {
+function HomeModule({ clients, go, clinic, onSync, role, me, payments, users }) {
+  if (role === "admin" || role === "superadmin") return <AdminHome clients={clients} go={go} clinic={clinic} role={role} me={me} payments={payments} users={users} />;
   const st = clinicStatus(clinic);
   const cnt = (f) => clients.filter(f).length;
   const ps = (c) => patientStatus(c);
@@ -728,19 +804,21 @@ function HSAModule({ clients, setClients }) {
   return (
     <div>
       {!c ? <Panel title="HEALTH SCREENING & ASSESSMENT (FIRST PATIENT ENCOUNTER)"><ClientPicker clients={clients} value={sel} onChange={setSel} /></Panel>
-        : <HSAWizard key={c.id} c={c} back={() => setSel(null)} started={() => setClients((p) => p.map((x) => x.id === c.id && !x.fpeStarted ? { ...x, fpeStarted: true } : x))} save={(h) => setClients((p) => p.map((x) => x.id === c.id ? { ...x, hsa: h } : x))} />}
+        : <HSAWizard key={c.id} c={c} back={() => setSel(null)} started={() => setClients((p) => p.map((x) => x.id === c.id && !x.fpeStarted ? { ...x, fpeStarted: true } : x))} save={(h) => setClients((p) => p.map((x) => x.id === c.id ? { ...x, hsa: h, sub: x.hsa && x.sub && x.sub.rejected ? null : x.sub, xmlExported: x.hsa ? null : x.xmlExported } : x))} />}
     </div>
   );
 }
 
 function HSAWizard({ c, back, save, started }) {
-  const toast = useToast(); const log = useLog();
+  const toast = useToast(); const log = useLog(); const me = useMe();
+  const [editing, setEditing] = useState(false);
+  const canEdit = !!c.hsa && EDITORS.includes(me.role), lockWhy = editLock(c);
   const [h, setH] = useState(() => { const b = blankHsa(); return c.hsa ? { ...b, ...clone(c.hsa) } : b; });
   const [step, setStep] = useState("profile");
   const [err, setErr] = useState("");
   const [done, setDone] = useState(false);
   const [ask, setAsk] = useState(false);
-  const locked = !!c.hsa || done;
+  const locked = (!!c.hsa || done) && !editing;
   const age = calcAge(c.dob), months = ageMonths(c.dob);
   const steps = HSA_STEPS.filter(([id]) => (id !== "women" || c.sex === "F") && ((id !== "ncd" && id !== "ncd2") || age >= 25));
   const pos = steps.findIndex(([id]) => id === step);
@@ -761,7 +839,8 @@ function HSAWizard({ c, back, save, started }) {
 
   return (
     <Panel title={`HEALTH SCREENING & ASSESSMENT RECORD — ${fullName(c)} (${age} y/o, ${c.sex === "F" ? "Female" : "Male"})`} right={<button type="button" onClick={back} className="underline">Change client</button>}>
-      {locked && <div className="mb-3"><Notice kind="info">Health screening already saved for this client (read-only).</Notice></div>}
+      {locked && <div className="mb-3 flex items-center gap-2"><div className="flex-1"><Notice kind="info">Health screening already saved for this client (read-only){canEdit && lockWhy ? `. Cannot be corrected: ${lockWhy}.` : "."}</Notice></div>{canEdit && !lockWhy && <Btn v="warning" onClick={() => { setEditing(true); setDone(false); }}><Pencil size={14} />Correct FPE</Btn>}</div>}
+      {editing && <div className="mb-3"><Notice>Correction mode: changes overwrite the saved FPE and are recorded in the audit log.</Notice></div>}
       <Steps labels={steps.map(([, l]) => l)} idx={pos} onGo={(p) => { setErr(""); setStep(steps[p][0]); }} />
       <fieldset disabled={locked} className="space-y-5">
         {step === "profile" && <>
@@ -897,9 +976,9 @@ function HSAWizard({ c, back, save, started }) {
       {done && <div className="mt-3"><Notice kind="ok">Health screening saved.</Notice></div>}
       <div className="mt-4 flex justify-between">
         <Btn v="white" disabled={pos === 0} onClick={() => go(-1)}><ChevronLeft size={14} />Previous</Btn>
-        {pos < steps.length - 1 ? <Btn v="info" onClick={() => go(1)}>Next<ChevronRight size={14} /></Btn> : !locked && <Btn v="green" onClick={final}>Save HSA</Btn>}
+        {pos < steps.length - 1 ? <Btn v="info" onClick={() => go(1)}>Next<ChevronRight size={14} /></Btn> : !locked && <Btn v="green" onClick={final}>{editing ? "Save corrections" : "Save HSA"}</Btn>}
       </div>
-      {ask && <ConfirmModal title="Save health screening?" text="After saving, this record can no longer be edited." onNo={() => setAsk(false)} onYes={() => { save(h); setDone(true); setAsk(false); toast("Health screening saved."); log("FPE saved", fullName(c)); }} />}
+      {ask && <ConfirmModal title={editing ? "Save FPE corrections?" : "Save health screening?"} text={editing ? "The saved FPE will be replaced with these corrections." : "After saving, only the Encoder / IT can correct this record."} onNo={() => setAsk(false)} onYes={() => { save(h); setDone(true); setAsk(false); if (editing) { setEditing(false); toast("FPE corrected."); log("FPE corrected", fullName(c)); return; } toast("Health screening saved."); log("FPE saved", fullName(c)); }} />}
     </Panel>
   );
 }
@@ -976,9 +1055,22 @@ function cErr(f, id, c) {
 }
 const dxList = (k) => (Array.isArray(k.dx) ? k.dx : [k.dx]).filter((d) => d && d.trim());
 
-function ConsultModule({ clients, setClients }) {
-  const [sel, setSel] = useState(null);
+function ConsultModule({ clients, setClients, clinic }) {
+  const me = useMe();
+  const [sel, setSel] = useState(null); const [mode, setMode] = useState(null); // null = choose, "new", or consultation index
   const c = clients.find((x) => x.id === sel);
+  const editor = EDITORS.includes(me.role);
+  const pick = (id) => { setSel(id); setMode(null); };
+  // Correct an existing consultation: replace it, keep dispensed medicines and lab results, re-sync open orders.
+  const saveEdit = (i) => (f) => setClients((p) => p.map((x) => {
+    if (x.id !== c.id) return x;
+    const old = x.consults[i];
+    const keepMeds = x.meds.filter((m) => m.dispensed || !(old.meds || []).some((o) => o.drug === m.drug));
+    const newMeds = f.meds.filter((m) => !keepMeds.some((k) => k.drug === m.drug && k.dispensed));
+    let labs = x.labs.filter((l) => !(l.date === old.date && !l.result && !l.waived && !(f.labs[l.test] && f.labs[l.test].cli === "R")));
+    Object.entries(f.labs).forEach(([code, r]) => { if (r.cli === "R" && !labs.some((l) => l.test === code && (l.date === f.date || (!l.result && !l.waived)))) labs.push({ id: nid(), test: code, date: f.date, result: "", flag: "", guide: labStatus(code, x), from: r.doc === "Y" ? "doctor" : "patient" }); });
+    return { ...x, consults: x.consults.map((k, j) => (j === i ? { ...f, dx: f.dx.filter((d) => d.trim()), ekas: k.ekas, edited: todayISO(), editedBy: me.name } : k)), meds: [...keepMeds, ...newMeds], labs, sub: x.sub && x.sub.rejected ? null : x.sub, xmlExported: null };
+  }));
   const saveConsult = (f) => setClients((p) => p.map((x) => {
     if (x.id !== c.id) return x;
     const add = [];
@@ -986,10 +1078,19 @@ function ConsultModule({ clients, setClients }) {
       if (r.cli !== "R") return;
       if (!x.labs.some((l) => l.test === code && !l.result && !l.waived)) add.push({ id: nid(), test: code, date: f.date, result: "", flag: "", guide: labStatus(code, x), from: r.doc === "Y" ? "doctor" : "patient" });
     });
-    return { ...x, consults: [...x.consults, { ...f, dx: f.dx.filter((d) => d.trim()) }], meds: [...x.meds, ...f.meds], labs: [...x.labs, ...add] };
+    return { ...x, consults: [...x.consults, { ...f, dx: f.dx.filter((d) => d.trim()), ...(me.role === "doctor" ? { doctor: { name: me.name, prc: me.prc || "" } } : {}) }], meds: [...x.meds, ...f.meds], labs: [...x.labs, ...add] };
   }));
-  return !c ? <Panel title="CONSULTATION"><Notice kind="info">Only clients with a completed FPE who are empanelled on the registration site can be consulted (status: Ready for Care).</Notice><div className="mt-3"><ClientPicker clients={clients} filter={(x) => x.hsa && x.emp && x.emp.choice === "YES" && x.emp.verified} value={sel} onChange={setSel} /></div></Panel>
-    : <ConsultWizard key={c.id} c={c} back={() => setSel(null)} save={saveConsult} />;
+  const ready = (x) => x.hsa && x.emp && x.emp.choice === "YES" && x.emp.verified;
+  if (!c) return <Panel title="CONSULTATION"><Notice kind="info">{editor ? "Encode a consultation from the paper Consultation Record, or open a client to correct a saved consultation. New consultations need a completed FPE and empanelment (Ready for Care)." : "Only clients with a completed FPE who are empanelled on the registration site can be consulted (status: Ready for Care)."}</Notice><div className="mt-3"><ClientPicker clients={clients} filter={(x) => ready(x) || (editor && x.consults.length > 0)} value={sel} onChange={pick} /></div></Panel>;
+  if (editor && c.consults.length && mode === null) { const why = editLock(c);
+    return <Panel title={`CONSULTATIONS — ${fullName(c)}`} right={<button type="button" onClick={() => setSel(null)} className="underline">Change client</button>}>
+      {why && <div className="mb-3"><Notice kind="info">Saved consultations cannot be corrected: {why}.</Notice></div>}
+      <Table cols={["Date", "Diagnosis", "Attending physician", "Last corrected", ""]} rows={c.consults.map((k, i) => [k.date, dxList(k).join("; "), ekasDoctor(k, clinic).name || "—", k.edited ? `${k.edited} · ${k.editedBy}` : "—",
+        <Btn key={i} v="warning" disabled={!!why} onClick={() => setMode(i)}><Pencil size={13} />Correct</Btn>])} />
+      {ready(c) && <div className="mt-3"><Btn v="green" onClick={() => setMode("new")}><Plus size={14} />Encode new consultation</Btn></div>}
+    </Panel>; }
+  const idx = typeof mode === "number" ? mode : null;
+  return <ConsultWizard key={c.id + ":" + mode} c={c} back={() => (editor && c.consults.length ? setMode(null) : setSel(null))} save={idx !== null ? saveEdit(idx) : saveConsult} initial={idx !== null ? c.consults[idx] : null} physicians={me.role === "doctor" ? null : clinic.physicians} />;
 }
 
 // Doctor decides the tests. Doctor "Yes" automatically sets Client = Request and locks it.
@@ -1010,9 +1111,10 @@ function LabPlanRow({ code, name, guide, row, set, pending }) {
   );
 }
 
-function ConsultWizard({ c, back, save }) {
+function ConsultWizard({ c, back, save, initial, physicians }) {
   const toast = useToast(); const log = useLog();
-  const [f, setF] = useState(blankC());
+  const editing = !!initial;
+  const [f, setF] = useState(() => (initial ? { ...blankC(), ...clone(initial), dx: [...(initial.dx || []), ...Array(DX_ROWS).fill("")].slice(0, Math.max(DX_ROWS, (initial.dx || []).length)) } : blankC()));
   const [step, setStep] = useState("profile");
   const [err, setErr] = useState("");
   const [done, setDone] = useState(false);
@@ -1020,8 +1122,9 @@ function ConsultWizard({ c, back, save }) {
   const age = calcAge(c.dob), months = ageMonths(c.dob);
   const pos = C_STEPS.findIndex(([id]) => id === step);
   const upd = (k, v) => setF((p) => ({ ...p, [k]: v }));
-  const go = (dir) => { if (dir > 0 && !done) { const e = cErr(f, step, c); if (e) return setErr(e); } setErr(""); const n = C_STEPS[pos + dir]; if (n) setStep(n[0]); };
-  const finish = () => { for (const [id] of C_STEPS) { const e = cErr(f, id, c); if (e) { setStep(id); return setErr(e); } } setErr(""); setAsk(true); };
+  const errOf = (id) => (id === "profile" && physicians && !f.doctor ? "Select the attending physician." : cErr(f, id, c));
+  const go = (dir) => { if (dir > 0 && !done) { const e = errOf(step); if (e) return setErr(e); } setErr(""); const n = C_STEPS[pos + dir]; if (n) setStep(n[0]); };
+  const finish = () => { for (const [id] of C_STEPS) { const e = errOf(id); if (e) { setStep(id); return setErr(e); } } setErr(""); setAsk(true); };
   const pending = (code) => c.labs.some((l) => l.test === code && !l.result && !l.waived);
   const yesRec = Object.keys(LABS).filter((k) => labStatus(k, c) === "R");
   const requested = Object.entries(f.labs).filter(([, r]) => r.doc === "Y").map(([k]) => LABS[k].short);
@@ -1035,7 +1138,9 @@ function ConsultWizard({ c, back, save }) {
             <F label="Authorization Transaction Code"><input className={inp()} value={f.atc} onChange={(e) => upd("atc", e.target.value.toUpperCase())} /></F>
             <F label="Co-payment"><Unit u="Php"><input className={inp()} inputMode="decimal" value={f.copay} onChange={(e) => upd("copay", numOnly(e.target.value))} /></Unit></F>
             <F label="Consultation date" req><input type="date" className={inp()} value={f.date} onChange={(e) => upd("date", e.target.value)} /></F>
+            {physicians && <F label="Attending physician" req><select className={inp()} value={f.doctor ? f.doctor.prc : ""} onChange={(e) => { const ph = physicians.find((x) => x.prc === e.target.value); upd("doctor", ph ? { name: ph.name, prc: ph.prc } : null); }}><option value="">Select physician</option>{physicians.map((ph) => <option key={ph.prc} value={ph.prc}>{ph.name} (PRC {ph.prc})</option>)}</select></F>}
           </div>
+          {editing && <Notice>Correction mode: saving replaces this consultation. Dispensed medicines and lab results already entered are kept.</Notice>}
           <Sec title="A. Chief complaint *"><div className="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-0.5 text-xs">{CHIEF.map((o) => <Check key={o} checked={f.cc.includes(o)} onChange={(on) => upd("cc", on ? [...f.cc, o] : f.cc.filter((x) => x !== o))} label={o} />)}</div>
             {f.cc.includes("OTHERS") && <input className={inp()} placeholder="Specify other complaints" value={f.ccOther} onChange={(e) => upd("ccOther", e.target.value)} />}</Sec>
           <F label="B. History of illness"><textarea rows={2} className={inp()} value={f.hpi} onChange={(e) => upd("hpi", e.target.value)} /></F>
@@ -1074,7 +1179,7 @@ function ConsultWizard({ c, back, save }) {
         <Btn v="white" disabled={pos === 0} onClick={() => go(-1)}><ChevronLeft size={14} />Previous</Btn>
         {pos < C_STEPS.length - 1 ? <Btn v="info" onClick={() => go(1)}>Next<ChevronRight size={14} /></Btn> : !done && <Btn v="green" onClick={finish}>Save consultation</Btn>}
       </div>
-      {ask && <ConfirmModal title="Save consultation?" text="After saving, this consultation can no longer be edited." onNo={() => setAsk(false)} onYes={() => { save(f); setDone(true); setAsk(false); toast("Consultation saved."); log("Consultation saved", fullName(c)); }} />}
+      {ask && <ConfirmModal title={editing ? "Save consultation corrections?" : "Save consultation?"} text={editing ? "The saved consultation will be replaced with these corrections." : "After saving, only the Encoder / IT can correct this consultation."} onNo={() => setAsk(false)} onYes={() => { save(f); setDone(true); setAsk(false); if (editing) { toast("Consultation corrected."); log("Consultation corrected", fullName(c)); return; } toast("Consultation saved."); log("Consultation saved", fullName(c)); }} />}
     </Panel>
   );
 }
@@ -1172,7 +1277,7 @@ function UploaderModule() {
 }
 
 /* ---------- Clinic accreditation ---------- */
-const BADGE2 = { "In Preparation": "bg-slate-100 text-slate-600", "Application Submitted": "bg-sky-100 text-sky-700", "Approval Verified": "bg-emerald-100 text-emerald-700", "Action Required": "bg-rose-100 text-rose-700", Valid: "bg-emerald-100 text-emerald-700", Expiring: "bg-amber-100 text-amber-700", Expired: "bg-rose-100 text-rose-700", Missing: "bg-rose-100 text-rose-700", Registered: "bg-slate-100 text-slate-600", "FPE In Progress": "bg-sky-100 text-sky-700", "Awaiting Empanelment": "bg-amber-100 text-amber-700", "Ready for Care": "bg-teal-100 text-teal-700", "Consultation Completed": "bg-emerald-100 text-emerald-700", Draft: "bg-slate-100 text-slate-600", "Validation Failed": "bg-rose-100 text-rose-700", "Ready to Submit": "bg-sky-100 text-sky-700", "Pending Acknowledgment": "bg-amber-100 text-amber-700", Acknowledged: "bg-emerald-100 text-emerald-700" };
+const BADGE2 = { "In Preparation": "bg-slate-100 text-slate-600", "Application Submitted": "bg-sky-100 text-sky-700", "Approval Verified": "bg-emerald-100 text-emerald-700", "Action Required": "bg-rose-100 text-rose-700", Valid: "bg-emerald-100 text-emerald-700", Expiring: "bg-amber-100 text-amber-700", Expired: "bg-rose-100 text-rose-700", Missing: "bg-rose-100 text-rose-700", Registered: "bg-slate-100 text-slate-600", "FPE In Progress": "bg-sky-100 text-sky-700", "Awaiting Empanelment": "bg-amber-100 text-amber-700", "Ready for Care": "bg-teal-100 text-teal-700", "Consultation Completed": "bg-emerald-100 text-emerald-700", Draft: "bg-slate-100 text-slate-600", "Validation Failed": "bg-rose-100 text-rose-700", "Ready to Submit": "bg-sky-100 text-sky-700", "Pending Acknowledgment": "bg-amber-100 text-amber-700", "In Transmittal": "bg-indigo-100 text-indigo-700", Acknowledged: "bg-emerald-100 text-emerald-700" };
 function Badge({ s }) { return <span className={`px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ${BADGE2[s] || "bg-slate-100 text-slate-600"}`}>{s}</span>; }
 
 function ClinicModule({ clinic, setClinic }) {
@@ -1449,7 +1554,107 @@ function ClientReferrals({ c, setClients }) {
   );
 }
 
-function DiagnosticsModule({ clients, setClients }) {
+/* ---------- eKAS: Konsulta Availment Slip ---------- */
+// One slip per consultation. Tracking lives on the consultation: ekas = { printed, printedBy, signed, signedBy }.
+const ekasOf = (c, i = c.consults.length - 1) => (c.consults[i] && c.consults[i].ekas) || {};
+const ekasState = (c, i) => (!c.consults.length ? "" : ekasOf(c, i).signed ? "Signed" : ekasOf(c, i).printed ? "Printed" : "Not printed");
+const EKAS_TONE = { Signed: "bg-emerald-100 text-emerald-700", Printed: "bg-amber-100 text-amber-700", "Not printed": "bg-rose-100 text-rose-700" };
+function EkasBadge({ s }) { return s ? <span className={`px-2 py-0.5 rounded-full text-[11px] font-medium whitespace-nowrap ${EKAS_TONE[s]}`}>eKAS {s.toLowerCase()}</span> : null; }
+const ekasDoctor = (k, clinic) => k.doctor || (clinic.physicians[0] ? { name: clinic.physicians[0].name, prc: clinic.physicians[0].prc } : { name: "", prc: "" });
+// Marks slips; items = [{ id, i }] (client id + consultation index).
+const markEkas = (setClients, items, field, by) => setClients((p) => p.map((x) => {
+  const mine = items.filter((it) => it.id === x.id); if (!mine.length) return x;
+  return { ...x, consults: x.consults.map((k, j) => mine.some((it) => it.i === j) ? { ...k, ekas: { ...(k.ekas || {}), [field]: todayISO(), [field + "By"]: by } } : k) };
+}));
+// Layout follows PhilHealth's ELECTRONIC KONSULTA AVAILMENT SLIP (eKAS): 2 copies per consultation (HCI's copy + Patient's copy).
+function printEkas(items, clinic, by = "") {
+  const acc = (clinic.emr && clinic.emr.providerId) || HOSPITAL_ACCNO;
+  const d8 = (iso) => (iso ? `${iso.slice(5, 7)}/${iso.slice(8, 10)}/${iso.slice(0, 4)}` : "");
+  const now = new Date(), pad = (n) => String(n).padStart(2, "0");
+  const prepared = `${pad(now.getMonth() + 1)}/${pad(now.getDate())}/${now.getFullYear()} ${pad(now.getHours() % 12 || 12)}:${pad(now.getMinutes())}:${pad(now.getSeconds())}${now.getHours() < 12 ? "am" : "pm"}`;
+  const u = (v, w = 0) => `<u style="min-width:${w}px">&nbsp;${esc(v || "")}&nbsp;</u>`;
+  const face = (bg, mouth) => `<span class="fc"><span class="bx"></span><svg width="34" height="34" viewBox="0 0 34 34"><circle cx="17" cy="17" r="16" fill="${bg}" stroke="#333"/><circle cx="12" cy="13" r="2"/><circle cx="22" cy="13" r="2"/>${mouth}</svg></span>`;
+  const slip = ({ c, i }, copy) => {
+    const k = c.consults[i];
+    const hpe = (c.hsa && c.hsa.date) || k.date;
+    const svc = [["History and Physical Examination (vitals, anthropometrics...)", "Y", hpe], ["Consultation", "Y", k.date],
+      ...c.labs.filter((l) => l.date === k.date).map((l) => [(LABS[l.test] && LABS[l.test].short) || l.test, l.waived ? "X" : l.result ? "Y" : "", l.result ? l.resultDate || l.date : ""]),
+      ...(k.labOther && (k.labOtherDoc === "Y" || k.labOtherCli === "R") ? [["Others - " + k.labOther.toUpperCase(), "", ""]] : [])];
+    const txn = (k.txn || `SP${acc.replace(/\D/g, "")}${k.date.replace(/-/g, "")}${String(c.id).padStart(4, "0")}${i + 1}`);
+    return `<section class="slip">
+      <div class="top">ELECTRONIC KONSULTA AVAILMENT SLIP (eKAS)</div>
+      <div class="two"><div>HCI Name: ${u(HOSPITAL)}<br>HCI Accreditation No.: ${u(acc)}</div><div>Case No.: ${u(c.caseNo || "")}<br>Transaction No.: ${u(txn)}</div></div>
+      <div class="row">Client Name <i>(Pangalan ng Kliyente)</i>: ${u(fullName(c))} &nbsp; Age <i>(Edad)</i>: ${u(calcAge(c.dob) + " yr(s) old")} &nbsp; Contact No.: ${u(c.mobile)}</div>
+      <div class="two"><div>PIN (PhilHealth Identification Number): ${u((c.pin || "").replace(/-/g, ""))}<br>Membership Type: ${u(c.type === "MM" ? "✔" : "")} MEMBER ${u(c.type === "DD" ? "✔" : "")} DEPENDENT</div><div>Membership Category: ${u(c.category || "", 80)}<br>Authorization Transaction Code (ATC): ${u(k.atc || "WALKEDIN")}</div></div>
+      <div class="bar">To be filled out by the facility <i>(pupunuan ng pasilidad)</i></div>
+      <table><thead><tr><th style="width:30%">Konsulta Services</th><th>(✔) Performed <i>(nagawa)</i><br>(X) Not performed <i>(hindi nagawa)</i></th><th>Date Performed<br><i>(Petsa kung kelan ginawa)</i></th><th style="width:26%">Performed by<br>(Ginawa ni)<br>(Initial/Signature of Health care Provider/technician)<br>(Initial o Lagda ng Health care Provider/technician)</th></tr></thead>
+      <tbody>${svc.map(([n, st, d]) => `<tr><td>${esc(n)}</td><td class="c">${st === "Y" ? "✔" : st === "X" ? "X" : ""}</td><td class="c">${d8(d)}</td><td></td></tr>`).join("")}</tbody></table>
+      <div class="bar">To be filled out by the client <i>(pupunuan ng kliyente)</i></div>
+      <div class="cl"><p>Have you received the above-mentioned essential services? ____ YES ____ NO<br><i>(Natanggap mo ba ang mga essential services na nabanggit?)</i></p>
+      <div class="sat"><p>How satisfied are you with the services provided?<br><i>(Gaano ka nasiyahan sa natanggap mong serbisyo?)</i></p><div>${face("#3ccf3c", '<path d="M10 21q7 6 14 0" stroke="#000" stroke-width="2" fill="none"/>')}${face("#f3e600", '<path d="M10 22h14" stroke="#000" stroke-width="2"/>')}${face("#e53935", '<path d="M10 25q7-6 14 0" stroke="#000" stroke-width="2" fill="none"/>')}</div></div>
+      <p>For your comment, suggestion or complaint:<br><i>(Para sa iyong komento, mungkahi o reklamo)</i></p></div>
+      <div class="ln"></div><div class="ln"></div>
+      <p class="att">Under the penalty of law, I attest that the information I provided in this slip are true and accurate.<br><i>(Sa ilalim ng batas, pinatutunayan ko na ang impormasyong ibinigay ko ay totoo at tama)</i></p>
+      <div class="two sg"><div><div class="sl"></div>Signature over printed name of client<br><i>(Lagda sa nakalimbag na pangalan ng kliyente)</i></div><div>Next Consultation Date:: ________________________<br><i>(Petsa ng susunod na konsultasyon)</i></div></div>
+      <p class="nt">Note:<br>Accomplished form shall be submitted to PhilHealth.<br><i>(Ang kumpletong form ay dapat isumite sa PhilHealth)</i></p>
+      <div class="prep"><i>Prepared Date:${prepared} Prepared By: ${esc((by || "").toUpperCase())}<br>[${copy}]</i></div>
+    </section>`;
+  };
+  const w = window.open("", "_blank"); if (!w) return false;
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>eKAS</title><style>
+    @page{size:A4;margin:12mm} body{font-family:"DejaVu Sans",Arial,sans-serif;color:#000;margin:0;padding:12px;font-size:10.5px}
+    .slip{max-width:740px;margin:0 auto 20px;padding:4px 10px;border:1px solid #ccc;page-break-after:always} .slip:last-child{page-break-after:auto}
+    .top{font-size:13px;padding:14px 0 12px;border-bottom:1px solid #000;margin-bottom:12px} u{text-decoration:underline;display:inline-block}
+    .two{display:grid;grid-template-columns:1.15fr 1fr;gap:10px;margin:8px 0;line-height:1.5} .row{margin:12px 0}
+    .bar{background:#d9d4d4;padding:3px 8px;margin:14px 0 10px} table{width:94%;margin:0 auto;border-collapse:collapse} th,td{border:1px solid #000;padding:1px 3px;vertical-align:top}
+    th{font-weight:normal;text-align:center;vertical-align:middle;padding:6px 3px} .c{text-align:center} .cl{padding-left:10px} .cl p{margin:10px 0}
+    .sat{display:flex;align-items:center;gap:50px} .sat>div{display:flex;gap:8px} .fc{display:inline-flex;align-items:center;gap:2px} .bx{width:8px;height:8px;border:1px solid #000;display:inline-block}
+    .ln{border-bottom:1px solid #000;margin:18px 0 0;width:95%} .att{margin-top:28px} .sg{margin-top:34px} .sl{border-bottom:1px solid #000;width:72%;margin-bottom:2px}
+    .nt{margin-top:18px} .prep{text-align:right;margin:8px 0 10px}
+    @media print{body{padding:0}.slip{border:none;margin:0;max-width:none} button{display:none}}</style></head><body>
+    <button onclick="window.print()" style="padding:6px 12px;margin-bottom:10px">Print / Save as PDF</button>${items.map((x) => slip(x, "HCIs Copy") + slip(x, "Patients Copy")).join("")}</body></html>`);
+  w.document.close(); setTimeout(() => { try { w.focus(); w.print(); } catch (e) {} }, 400); return true;
+}
+// Print / mark-signed buttons for one client's latest consultation.
+function EkasActions({ c, clinic, setClients }) {
+  const toast = useToast(), log = useLog(), me = useMe();
+  if (!c.consults.length) return null;
+  const i = c.consults.length - 1, e = ekasOf(c, i), by = me.name || "";
+  const print = () => { if (!printEkas([{ c, i }], clinic, by)) return toast("Allow pop-ups to print the eKAS.", "error"); if (!e.printed) markEkas(setClients, [{ id: c.id, i }], "printed", by); log("eKAS printed", fullName(c)); };
+  const sign = () => { markEkas(setClients, [{ id: c.id, i }], "signed", by); log("eKAS signed copy received", fullName(c)); toast("eKAS marked as signed."); };
+  return <div className="flex items-center gap-2 flex-wrap"><EkasBadge s={ekasState(c, i)} />{e.signed && <span className="text-[11px] text-slate-500">{e.signed} · {e.signedBy}</span>}
+    <Btn v="info" onClick={print}><Printer size={14} />{e.printed ? "Reprint eKAS" : "Print eKAS"}</Btn>
+    {!e.signed && <Btn v="green" disabled={!e.printed} onClick={sign} title={e.printed ? "" : "Print the slip first"}><CheckIcon size={14} />Mark signed</Btn>}</div>;
+}
+// Audit & Reports → eKAS: every consultation in a date range, with batch print and signed tracking.
+function EkasModule({ clients, setClients, clinic }) {
+  const toast = useToast(), log = useLog(), me = useMe();
+  const [from, setFrom] = useState(todayISO().slice(0, 8) + "01"); const [to, setTo] = useState(todayISO()); const [show, setShow] = useState("all");
+  const all = clients.flatMap((c) => c.consults.map((k, i) => ({ c, i, k, s: ekasState(c, i) }))).filter((x) => x.k.date >= from && x.k.date <= to).sort((a, b) => b.k.date.localeCompare(a.k.date));
+  const rows = all.filter((x) => show === "all" || (show === "missing" ? x.s !== "Signed" : x.s === show));
+  const n = (s) => all.filter((x) => x.s === s).length;
+  const printAll = () => {
+    if (!rows.length) return toast("No consultations in this range.", "info");
+    if (!printEkas(rows, clinic, me.name || "")) return toast("Allow pop-ups to print the eKAS.", "error");
+    markEkas(setClients, rows.filter((x) => !ekasOf(x.c, x.i).printed).map((x) => ({ id: x.c.id, i: x.i })), "printed", me.name || ""); log("eKAS batch printed", `${rows.length} slip(s), ${from} to ${to}`);
+  };
+  const one = (x, field) => { if (field === "printed" && !printEkas([x], clinic, me.name || "")) return toast("Allow pop-ups to print the eKAS.", "error"); if (field === "signed" || !ekasOf(x.c, x.i).printed) markEkas(setClients, [{ id: x.c.id, i: x.i }], field, me.name || ""); log(field === "signed" ? "eKAS signed copy received" : "eKAS printed", fullName(x.c)); if (field === "signed") toast("eKAS marked as signed."); };
+  return (
+    <Panel title={`eKAS — KONSULTA AVAILMENT SLIPS (${all.length})`} right={<span>{n("Signed")} signed · {n("Printed")} printed, unsigned · {n("Not printed")} not printed</span>}>
+      <div className="flex flex-wrap gap-2 items-end mb-3">
+        <F label="From"><input type="date" className={inp()} value={from} onChange={(e) => setFrom(e.target.value)} /></F>
+        <F label="To"><input type="date" className={inp()} value={to} onChange={(e) => setTo(e.target.value)} /></F>
+        <div className="flex rounded-lg border border-slate-200 overflow-hidden text-xs">{[["all", "All"], ["missing", "Missing signature"], ["Not printed", "Not printed"], ["Signed", "Signed"]].map(([v, l]) => <button key={v} type="button" onClick={() => setShow(v)} className={`px-3 py-2 ${show === v ? "bg-[var(--accent)] text-white" : "bg-white text-slate-600 hover:bg-slate-50"}`}>{l}</button>)}</div>
+        <Btn v="green" className="ml-auto" onClick={printAll}><Printer size={14} />Print {rows.length} slip(s)</Btn>
+      </div>
+      <Table pageSize={7} cols={["Consultation", "Client", "PIN", "Attending physician", "eKAS", ""]} rows={rows.map((x) => [x.k.date, fullName(x.c), x.c.pin || "—", ekasDoctor(x.k, clinic).name || "—",
+        <span key="s" className="flex items-center gap-1.5"><EkasBadge s={x.s} />{ekasOf(x.c, x.i).signed && <span className="text-[11px] text-slate-500">{ekasOf(x.c, x.i).signed}</span>}</span>,
+        <span key="a" className="flex gap-1.5 justify-end"><Btn v="info" onClick={() => one(x, "printed")}><Printer size={13} />{x.s === "Not printed" ? "Print" : "Reprint"}</Btn>{x.s === "Printed" && <Btn v="green" onClick={() => one(x, "signed")}><CheckIcon size={13} />Signed</Btn>}</span>])} empty="No consultations in this date range." />
+    </Panel>
+  );
+}
+
+function DiagnosticsModule({ clients, setClients, clinic }) {
   const toast = useToast(), log = useLog();
   const [sel, setSel] = useState(null); const [tab, setTab] = useState("results"); const [q, setQ] = useState(""); const [show, setShow] = useState("all");
   const done = clients.filter((x) => x.consults.length);
@@ -1468,7 +1673,7 @@ function DiagnosticsModule({ clients, setClients }) {
     return (
       <Panel title={`DIAGNOSTICS & REFERRAL — ${fullName(c)}`} right={<button type="button" onClick={() => setSel(null)} className="underline">← All consulted clients</button>}>
         <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-slate-500 mb-3"><span>{calcAge(c.dob)} y/o · {c.sex === "F" ? "Female" : "Male"} · {c.pin || "No PIN"}</span><span>Last consultation {k.date}</span><span>Diagnosis: {dxList(k).join("; ")}</span><span>{finished} result(s) in</span></div>
-        <div className="flex gap-1 border-b border-slate-200 mb-3">{tabs.map(([v, l]) => <button key={v} type="button" onClick={() => setTab(v)} className={`px-3 py-2 text-sm border-b-2 -mb-px ${tab === v ? "border-[var(--accent)] text-[var(--accent)] font-semibold" : "border-transparent text-slate-500 hover:text-slate-800"}`}>{l}</button>)}</div>
+        <div className="flex gap-1 border-b border-slate-200 mb-3 items-center">{tabs.map(([v, l]) => <button key={v} type="button" onClick={() => setTab(v)} className={`px-3 py-2 text-sm border-b-2 -mb-px ${tab === v ? "border-[var(--accent)] text-[var(--accent)] font-semibold" : "border-transparent text-slate-500 hover:text-slate-800"}`}>{l}</button>)}<div className="ml-auto pb-1" title="Konsulta Availment Slip: print, have the client sign, then mark signed"><EkasActions c={c} clinic={clinic} setClients={setClients} /></div></div>
         {tab === "results" && <ClientResults c={c} setClients={setClients} />}
         {tab === "refer" && <ClientReferrals c={c} setClients={setClients} />}
       </Panel>
@@ -1481,7 +1686,7 @@ function DiagnosticsModule({ clients, setClients }) {
         <div className="flex rounded-lg border border-slate-200 overflow-hidden text-xs">{[["all", "All"], ["pending", "Pending results"], ["refs", "Open referrals"]].map(([v, l]) => <button key={v} type="button" onClick={() => setShow(v)} className={`px-3 py-2 ${show === v ? "bg-[var(--accent)] text-white" : "bg-white text-slate-600 hover:bg-slate-50"}`}>{l}</button>)}</div>
       </div>
       <Table pageSize={8} cols={["Client", "Consultation", "Diagnosis", "Lab results", "Referrals", ""]} rows={list.map((x) => { const { k, pending, finished, refs } = info(x); return [
-        <div key="n"><div className="font-medium">{fullName(x)}</div><div className="text-[11px] text-slate-500">{calcAge(x.dob)} y/o · {x.sex} · {x.pin || "No PIN"}</div></div>,
+        <div key="n"><div className="font-medium">{fullName(x)}</div><div className="text-[11px] text-slate-500 flex items-center gap-1.5">{calcAge(x.dob)} y/o · {x.sex} · {x.pin || "No PIN"} <EkasBadge s={ekasState(x)} /></div></div>,
         k.date, <span key="d" className="text-xs">{dxList(k).join("; ")}</span>,
         <span key="l" className="text-xs">{pending ? <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 font-medium">{pending} pending</span> : x.labs.length ? <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 font-medium">All done</span> : <span className="text-slate-400">None ordered</span>}{finished ? <span className="text-slate-500"> · {finished} in</span> : null}</span>,
         refs ? <span key="r" className="px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 text-xs font-medium">{refs} open</span> : <span key="r" className="text-xs text-slate-400">—</span>,
@@ -1491,44 +1696,201 @@ function DiagnosticsModule({ clients, setClients }) {
 }
 
 /* ---------- EMR submission ---------- */
+// Transmittal flow mirrors eKonsulta: create (UNVALIDATED) → Prepare → View/Export XML → Validate XML → Send (enabled only when VALIDATED) → acknowledgment.
 function SubmissionModule({ clients, setClients, clinic }) {
-  const toast = useToast(), log = useLog();
+  const toast = useToast(), log = useLog(), me = useMe();
+  const [tab, setTab] = useState("records"); const [picked, setPicked] = useState([]); const [tranche, setTranche] = useState("First"); const [open, setOpen] = useState(null); const [menu, setMenu] = useState(false); const [vErr, setVErr] = useState([]);
   const rows = clients.filter((c) => c.hsa || c.consults.length);
   const gate = gateReason(clinic);
-  const upd = (id, fn, what) => { setClients((p) => p.map((x) => x.id === id ? { ...x, sub: fn(x.sub || {}) } : x)); log(what, clients.find((x) => x.id === id) ? fullName(clients.find((x) => x.id === id)) : ""); };
-  const submit = (c) => { if (gate) return toast(`Blocked: ${gate}.`, "error"); upd(c.id, () => ({ submittedAt: todayISO(), ref: "SUB-" + nid() }), "EMR record submitted"); toast("Submitted. Awaiting acknowledgment."); };
+  const ready = rows.filter((c) => subStatus(c) === "Ready to Submit");
+  const sel = picked.filter((id) => ready.some((c) => c.id === id));
+  const acc = ((clinic.emr && clinic.emr.providerId) || HOSPITAL_ACCNO).replace(/\D/g, "");
+  const batches = Object.values(clients.filter((c) => c.sub && c.sub.batch).reduce((m, c) => { const k = c.sub.batch; (m[k] = m[k] || { no: k, code: c.sub.ref, created: c.sub.created, date: c.sub.submittedAt, txn: c.sub.txn, tranche: c.sub.tranche, stage: c.sub.stage, items: [] }).items.push(c); return m; }, {})).sort((x, y) => y.no - x.no);
+  const bStatus = (b) => b.items.every((c) => c.sub.ack) ? "ACKNOWLEDGED" : b.items.some((c) => c.sub.rejected) ? "WITH ERRORS" : b.stage === "SENT" ? (b.items.some((c) => c.sub.ack) ? "PARTLY ACKNOWLEDGED" : "SENT") : b.stage;
+  const BT = { ACKNOWLEDGED: "bg-emerald-100 text-emerald-700", "WITH ERRORS": "bg-rose-100 text-rose-700", "PARTLY ACKNOWLEDGED": "bg-sky-100 text-sky-700", SENT: "bg-amber-100 text-amber-700", VALIDATED: "bg-teal-100 text-teal-700", PREPARED: "bg-indigo-100 text-indigo-700", UNVALIDATED: "bg-slate-100 text-slate-600" };
+  const updMany = (ids, fn) => setClients((p) => p.map((x) => (ids.includes(x.id) ? { ...x, sub: fn(x.sub || {}, x) } : x)));
+  const create = (ids) => {
+    if (!ids.length) return toast("Select at least one record that is Ready to Submit.", "info");
+    const no = Math.max(165, ...clients.map((c) => (c.sub && c.sub.batch) || 0)) + 1, code = `RP${acc}${todayISO().slice(0, 4)}${1000000 + no}`;
+    updMany(ids, () => ({ batch: no, ref: code, tranche, created: todayISO(), stage: "UNVALIDATED", by: me.name || "" }));
+    log("Transmittal created", `No. ${no} (${code}), ${tranche} tranche, ${ids.length} record(s)`); toast(`Transmittal No. ${no} created (UNVALIDATED).`);
+    setPicked([]); setTab("batches"); setOpen(no); setVErr([]);
+  };
+  const ob = batches.find((b) => b.no === open);
+  const ids = (b) => b.items.map((c) => c.id);
+  const setStage = (b, stage, extra = {}) => updMany(ids(b), (sb) => ({ ...sb, stage, ...extra }));
+  const editable = (b) => ["UNVALIDATED", "PREPARED", "VALIDATED"].includes(b.stage);
+  const act = {
+    prepare: (b) => { setStage(b, "PREPARED"); setVErr([]); log("Transmittal prepared", `No. ${b.no}`); toast(`Transmittal No. ${b.no} prepared. Validate the XML next.`); },
+    xml: (b) => { downloadText(`${acc}_TRANSMITTAL_${b.no}_${todayISO().replace(/-/g, "")}.xml`, buildKonsultaXml(b.items, clinic, me.name || "")); log("Konsulta XML exported", `Transmittal No. ${b.no}`); },
+    validate: (b) => {
+      const errs = b.items.flatMap((c) => [...validateRecord(c), ...xmlMissing(c).map((m) => "Missing " + m)].map((e) => `${fullName(c)}: ${e}`));
+      setVErr(errs);
+      if (errs.length) { setStage(b, "UNVALIDATED"); log("Transmittal validation failed", `No. ${b.no}: ${errs.length} issue(s)`); return toast(`${errs.length} issue(s) found. Fix them, then Prepare and Validate again.`, "error"); }
+      setStage(b, "VALIDATED"); log("Transmittal validated", `No. ${b.no}`); toast(`Transmittal No. ${b.no} validated. Ready to send.`);
+    },
+    send: (b) => {
+      if (gate) return toast(`Blocked: ${gate}.`, "error");
+      const txn = `SP${acc}${todayISO().replace(/-/g, "")}${String(b.no).padStart(6, "0")}`;
+      setStage(b, "SENT", { submittedAt: todayISO(), txn }); log("Transmittal sent", `No. ${b.no}, transaction ${txn}`); toast(`Transmittal No. ${b.no} sent. Awaiting acknowledgment.`);
+    },
+  };
+  const remove = (b, c) => { setClients((p) => p.map((x) => (x.id === c.id ? { ...x, sub: null } : x))); setStage({ items: b.items.filter((x) => x.id !== c.id) }, "UNVALIDATED"); log("Removed from transmittal", `${fullName(c)} · No. ${b.no}`); };
+  const ackAll = (b) => { updMany(ids(b).filter((id) => { const c = b.items.find((x) => x.id === id); return !c.sub.ack && !c.sub.rejected; }), (sb) => ({ ...sb, ack: true, receipt: "ACK-" + nid() })); log("Transmittal acknowledged (simulated)", `No. ${b.no}`); toast(`Transmittal No. ${b.no} acknowledged (simulated).`); };
+  const one = (c, what, fn) => { updMany([c.id], fn); log(what, fullName(c)); };
+  const tabs = [["records", `Records (${ready.length} ready)`], ["batches", `Transmittals (${batches.length})`]];
+  const MENU = ob ? [
+    ["prepare", "Prepare Transmittal", RefreshCw, ob.stage === "UNVALIDATED" || ob.stage === "PREPARED"],
+    ["xml", "View / Export XML", Download, true],
+    ["validate", "Validate XML", ListChecks, ob.stage === "PREPARED"],
+    ["send", "Send Transmittal", Send, ob.stage === "VALIDATED" && !gate],
+  ] : [];
   return (
     <Panel title="EMR VALIDATION & SUBMISSION">
-      {gate && <div className="mb-3"><Notice>Submission blocked: {gate}. Complete Clinic Accreditation and EMR Configuration first.</Notice></div>}
-      <Notice kind="info">Statuses shown are internal application statuses, not official PhilHealth codes. A real integration must map them to statuses returned by the certified EMR / PhilHealth interface. Acknowledgment and rejection buttons are simulations.</Notice>
-      <div className="mt-4 overflow-auto border border-slate-200 rounded-lg"><table className="w-full text-sm"><thead className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide"><tr>{["Client", "Encounter", "EMR status", "Validation / notes", "Actions"].map((h) => <th key={h} className="text-left px-3 py-2.5 font-medium">{h}</th>)}</tr></thead>
-        <tbody>{rows.length === 0 && <tr><td colSpan={5} className="p-4 text-center text-slate-500">No encounters to submit.</td></tr>}
-          {rows.map((c) => { const st = subStatus(c), errs = validateRecord(c); return (
-            <tr key={c.id} className="border-t border-slate-100 align-top">
-              <td className="px-3 py-2">{fullName(c)}</td><td className="px-3 py-2"><Badge s={patientStatus(c)} /></td><td className="px-3 py-2"><Badge s={st} /></td>
-              <td className="px-3 py-2 text-xs">{c.sub && c.sub.rejected ? <span className="text-rose-700">{c.sub.rejected}</span> : c.sub && c.sub.ack ? <span className="text-emerald-700">Receipt {c.sub.receipt}</span> : c.consults.length && errs.length ? <ul className="text-rose-700 list-disc pl-4">{errs.map((e) => <li key={e}>{e}</li>)}</ul> : c.consults.length ? "No validation errors." : "Awaiting consultation."}</td>
-              <td className="px-3 py-2"><div className="flex gap-1 flex-wrap">
-                {st === "Ready to Submit" && <Btn v="green" onClick={() => submit(c)}>Submit</Btn>}
-                {st === "Pending Acknowledgment" && <><Btn v="info" onClick={() => { upd(c.id, (s) => ({ ...s, ack: true, receipt: "ACK-" + nid() }), "Acknowledgment received (simulated)"); toast("Acknowledged (simulated)."); }}>Simulate ack</Btn><Btn v="white" onClick={() => upd(c.id, (s) => ({ ...s, rejected: "Rejected by interface (simulated): payload failed schema check." }), "Rejection received (simulated)")}>Simulate error</Btn></>}
-                {c.sub && c.sub.rejected && <Btn v="warning" onClick={() => upd(c.id, () => null, "Errors corrected, revalidating")}>Correct & revalidate</Btn>}
-              </div></td></tr>); })}</tbody></table></div>
+      {gate && <div className="mb-3"><Notice>Sending is blocked: {gate}. You can still create, prepare and validate transmittals.</Notice></div>}
+      <div className="flex gap-1 border-b border-slate-200 mb-3">{tabs.map(([v, l]) => <button key={v} type="button" onClick={() => { setTab(v); setOpen(null); setMenu(false); }} className={`px-3 py-2 text-sm border-b-2 -mb-px ${tab === v ? "border-[var(--accent)] text-[var(--accent)] font-semibold" : "border-transparent text-slate-500 hover:text-slate-800"}`}>{l}</button>)}
+        <span className="ml-auto self-center text-[11px] text-slate-400">Sending and acknowledgment are simulated until a certified EMR / PhilHealth connection exists.</span></div>
+      {tab === "records" && <>
+        <div className="flex flex-wrap items-center gap-2 mb-3 p-2 rounded-xl bg-slate-50 border border-slate-200">
+          <Btn v="white" disabled={!ready.length} onClick={() => setPicked(sel.length === ready.length ? [] : ready.map((c) => c.id))}>{sel.length === ready.length && ready.length ? "Clear selection" : `Select all ready (${ready.length})`}</Btn>
+          <select className={inp() + " !w-auto !py-1.5"} value={tranche} onChange={(e) => setTranche(e.target.value)} aria-label="Tranche"><option value="First">First tranche</option><option value="Second">Second tranche</option></select>
+          <span className="text-sm text-slate-600">{sel.length} selected</span>
+          <Btn v="green" className="ml-auto" disabled={!sel.length} onClick={() => create(sel)}><Plus size={14} />Create transmittal ({sel.length})</Btn>
+        </div>
+        <Table pageSize={6} cols={["", "Client", "Encounter", "EMR status", "Validation / notes", "Actions"]} rows={rows.map((c) => { const st = subStatus(c), errs = validateRecord(c); return [
+          st === "Ready to Submit" ? <input key="k" type="checkbox" aria-label={"Select " + fullName(c)} checked={sel.includes(c.id)} onChange={(e) => setPicked(e.target.checked ? [...sel, c.id] : sel.filter((x) => x !== c.id))} /> : <span key="k" />,
+          fullName(c), <Badge key="p" s={patientStatus(c)} />, <span key="s" className="flex flex-col gap-0.5"><Badge s={st} />{c.sub && c.sub.batch && <button type="button" onClick={() => { setTab("batches"); setOpen(c.sub.batch); }} className="text-[10px] text-slate-500 underline text-left">Transmittal {c.sub.batch}</button>}</span>,
+          <span key="v" className="text-xs">{c.sub && c.sub.rejected ? <span className="text-rose-700">{c.sub.rejected}</span> : c.sub && c.sub.ack ? <span className="text-emerald-700">Receipt {c.sub.receipt}</span> : c.consults.length && errs.length ? <span className="text-rose-700">{errs.join("; ")}</span> : c.consults.length ? "No validation errors." : "Awaiting consultation."}</span>,
+          <div key="a" className="flex gap-1 flex-wrap">
+            {st === "Pending Acknowledgment" && <><Btn v="info" onClick={() => { one(c, "Acknowledgment received (simulated)", (sb) => ({ ...sb, ack: true, receipt: "ACK-" + nid() })); toast("Acknowledged (simulated)."); }}>Simulate ack</Btn><Btn v="white" onClick={() => one(c, "Rejection received (simulated)", (sb) => ({ ...sb, rejected: "Rejected by interface (simulated): payload failed schema check." }))}>Simulate error</Btn></>}
+            {c.consults.length > 0 && <XmlButton c={c} setClients={setClients} clinic={clinic} />}
+            {c.sub && c.sub.rejected && <Btn v="warning" onClick={() => setClients((p) => p.map((x) => (x.id === c.id ? { ...x, sub: null } : x)))}>Correct & revalidate</Btn>}
+          </div>]; })} empty="No encounters to submit." />
+      </>}
+      {tab === "batches" && !ob && <Table pageSize={7} cols={["Transmittal No. / Code", "Created", "Tranche", "Records", "Status", ""]} rows={batches.map((b) => [<span key="n" className="whitespace-nowrap"><b>{b.no}</b> / {b.code}</span>, b.created || b.date, b.tranche, b.items.length, <span key="s" className={`px-2 py-0.5 rounded-full text-xs font-medium ${BT[bStatus(b)]}`}>{bStatus(b)}</span>, <Btn key="o" v="info" onClick={() => { setOpen(b.no); setVErr([]); }}>Open</Btn>])} empty="No transmittals yet. Select Ready records and click Create transmittal." />}
+      {tab === "batches" && ob && <div>
+        <div className="flex items-center justify-between mb-2"><button type="button" onClick={() => { setOpen(null); setMenu(false); }} className="text-sm underline">← All transmittals</button>
+          <div className="flex gap-2 items-center">{bStatus(ob) === "SENT" && <Btn v="info" onClick={() => ackAll(ob)}>Simulate ack (all)</Btn>}
+            <div className="relative"><button type="button" aria-label="Transmittal actions" onClick={() => setMenu(!menu)} className="p-2 rounded-full hover:bg-slate-100 border border-slate-200"><MoreVertical size={16} /></button>
+              {menu && <div className="absolute right-0 mt-1 w-60 bg-white border border-slate-200 rounded-xl shadow-lg py-1 z-40">{MENU.map(([k, l, I, on]) => <button key={k} type="button" disabled={!on} onClick={() => { setMenu(false); act[k](ob); }} className="w-full flex items-center gap-3 px-3 py-2 text-sm hover:bg-slate-50 disabled:text-slate-300 disabled:hover:bg-white"><I size={16} />{l}</button>)}</div>}</div></div></div>
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-3 p-3 rounded-xl border border-slate-200 text-sm">{[["Transmission No. / Code", `${ob.no} / ${ob.code}`, "md:col-span-2"], ["Transaction No.", ob.txn || "None", "md:col-span-2"], ["Tranche", ob.tranche], ["Total amount", can(me.role, "pay") ? peso(ob.items.length * (ob.tranche === "Second" ? TRANCHE_RATE.t2 : TRANCHE_RATE.t1)) : "—"], ["Transmission date", ob.date || "None", "md:col-span-2"], ["Status", bStatus(ob), "md:col-span-2"]].map(([k, v, cls]) => <div key={k} className={cls || ""}><div className="text-[11px] uppercase tracking-wide text-slate-500">{k}</div><div className="font-medium break-all">{v}</div></div>)}</div>
+        <div className="flex items-center gap-1.5 text-xs mb-3">{["UNVALIDATED", "PREPARED", "VALIDATED", "SENT", "ACKNOWLEDGED"].map((st, k, arr) => { const cur = arr.indexOf(bStatus(ob) === "PARTLY ACKNOWLEDGED" ? "SENT" : bStatus(ob)); return <React.Fragment key={st}><span className={`px-2 py-0.5 rounded-full ${k < cur ? "bg-emerald-100 text-emerald-700" : k === cur ? "bg-[var(--accent)] text-white" : "bg-slate-100 text-slate-400"}`}>{k + 1}. {st}</span>{k < arr.length - 1 && <ChevronRight size={12} className="text-slate-300" />}</React.Fragment>; })}</div>
+        {vErr.length > 0 && <div className="mb-3"><Notice>Validation found {vErr.length} issue(s): {vErr.slice(0, 4).join(" · ")}{vErr.length > 4 ? ` · +${vErr.length - 4} more` : ""}</Notice></div>}
+        <Table pageSize={5} cols={["Consult No. / Code", "Created", "Patient name", "Member name", "Status", ""]} rows={ob.items.map((c) => [`${c.id} / EP${acc}${(ob.created || ob.date || todayISO()).slice(0, 4)}${1000000 + c.id}`, c.consults.length ? xdate(c.consults[c.consults.length - 1].date) : "—", fullName(c), c.member || fullName(c), <Badge key="s" s={subStatus(c)} />,
+          editable(ob) ? <button key="x" type="button" title="Remove from transmittal" onClick={() => remove(ob, c)} className="text-rose-600"><Trash2 size={14} /></button> : <span key="x" />])} />
+      </div>}
+    </Panel>
+  );
+}
+
+/* ---------- Konsulta XML export (HCI Portal upload, eKonsulta transition) ----------
+   Structure follows the PhilHealth Konsulta/PCB XML layout (PCB > ENLISTMENTS / PROFILING / SOAPS / LABRESULTS / MEDICINES).
+   DRAFT: field names must be checked against an XML exported by eKonsulta before real uploads. */
+const xa = (o) => Object.entries(o).map(([k, v]) => ` ${k}="${esc(v ?? "")}"`).join("");
+const xdate = (iso) => (iso ? `${iso.slice(5, 7)}/${iso.slice(8, 10)}/${iso.slice(0, 4)}` : "");
+const pinRaw = (c) => (c.pin || "").replace(/-/g, "");
+function xmlMissing(c) {
+  const m = [];
+  if (c.type !== "NM" && !/^\d{12}$/.test(pinRaw(c))) m.push("PhilHealth PIN");
+  if (!c.dob) m.push("Birthdate");
+  if (!c.hsa) m.push("FPE / Health Screening");
+  if (!c.consults.length) m.push("Consultation");
+  const k = c.consults[c.consults.length - 1];
+  if (k) { if (!k.v || !k.v.sys || !k.v.dia) m.push("Consultation BP"); if (!dxList(k).length) m.push("Diagnosis"); }
+  c.labs.filter((l) => !l.result && !l.waived).forEach((l) => m.push(`Lab result: ${(LABS[l.test] && LABS[l.test].short) || l.test}`));
+  return m;
+}
+function buildKonsultaXml(list, clinic, by) {
+  const acc = (clinic.emr && clinic.emr.providerId) || HOSPITAL_ACCNO, now = todayISO(), year = now.slice(0, 4);
+  const tx = (c, tag) => `${tag}${acc.replace(/\D/g, "")}${now.replace(/-/g, "")}${String(c.id).padStart(5, "0")}`;
+  const pt = (c) => ({ pPatientPin: pinRaw(c), pPatientType: c.type, pMemPin: pinRaw(c), pEffYear: year });
+  const enl = list.map((c) => `<ENLISTMENT${xa({ pHciCaseNo: c.caseNo || tx(c, "T"), pHciTransNo: tx(c, "E"), pEffYear: year, pEnlistStat: "1", pEnlistDate: xdate(c.regDate), pPackageType: "K",
+    pMemPin: pinRaw(c), pMemFname: c.first, pMemMname: c.middle, pMemLname: c.last, pMemExtname: c.ext, pMemDob: xdate(c.dob), pMemCat: c.category || "", pPatientPin: pinRaw(c), pPatientFname: c.first, pPatientMname: c.middle, pPatientLname: c.last, pPatientExtname: c.ext,
+    pPatientType: c.type, pPatientSex: c.sex, pPatientContactno: c.mobile, pPatientDob: xdate(c.dob), pPatientAddbrgy: c.brgy, pPatientAddmun: c.mun, pPatientAddprov: c.prov, pPatientAddzipcode: c.zip,
+    pWithConsent: c.consent ? "Y" : "N", pWithLoa: c.loa ? "Y" : "N", pTransDate: xdate(now), pCreatedBy: by, pReportStatus: "U", pDeficiencyRemarks: "" })}/>`);
+  const prof = list.filter((c) => c.hsa).map((c) => { const h = c.hsa, v = h.v || {};
+    return `<PROFILE${xa({ pHciTransNo: tx(c, "P"), pHciCaseNo: c.caseNo || tx(c, "T"), pProfDate: xdate(h.date), ...pt(c), pPatientAge: calcAge(c.dob), pATC: h.atc || "WALKEDIN", pIsWalkedIn: h.atc ? "N" : "Y", pTransDate: xdate(now), pReportStatus: "U", pDeficiencyRemarks: "" })}>`
+      + `<MEDHIST${xa({ pMedHist: (h.pmh.items || []).join("|"), pAllergy: h.pmh.allergy, pCancer: h.pmh.cancer, pHepatitis: h.pmh.hep, pPtb: h.pmh.ptb, pEptb: h.pmh.eptb, pOthers: h.pmh.others })}/>`
+      + `<SURGHIST${xa({ pSurgHist: (h.surg || []).map((x) => (typeof x === "string" ? x : `${x.op || x.name || ""} ${x.date || ""}`.trim())).join("|") })}/>`
+      + `<FAMHIST${xa({ pFamHist: (h.fam.items || []).join("|"), pAllergy: h.fam.allergy, pCancer: h.fam.cancer, pOthers: h.fam.others })}/>`
+      + `<SOCHIST${xa({ pIsSmoker: h.social.smoke, pNoCigpk: h.social.packs, pIsAdrinker: h.social.alcohol, pNoBottles: h.social.bottles, pIllDrugUser: h.social.drugs, pIsSexuallyActive: h.social.sexActive })}/>`
+      + `<IMMUNIZATION${xa({ pChildImmcode: (h.imm.child || []).join("|"), pYoungwImmcode: (h.imm.adult || []).join("|"), pPregwImmcode: (h.imm.preg || []).join("|"), pElderlyImmcode: (h.imm.elder || []).join("|"), pOtherImm: h.imm.others })}/>`
+      + `<PEPERT${xa({ pSystolic: v.sys, pDiastolic: v.dia, pHr: v.hr, pRr: v.rr, pTemp: v.temp, pHeight: v.height, pWeight: v.weight })}/>`
+      + `<BLOODTYPE${xa({ pBloodType: v.blood })}/><PEGENSURVEY${xa({ pGenSurvey: v.survey })}/>`
+      + `<NCDQANS${xa({ pRiskLevel: (h.ncd && h.ncd.risk) || "" })}/></PROFILE>`; });
+  const soaps = list.flatMap((c) => c.consults.map((k, i) => { const v = k.v || {};
+    return `<SOAP${xa({ pHciCaseNo: c.caseNo || tx(c, "T"), pHciTransNo: tx(c, "S") + (i + 1), pSoapDate: xdate(k.date), ...pt(c), pATC: k.atc || "WALKEDIN", pIsWalkedIn: k.atc ? "N" : "Y", pCoPay: k.copay || "0", pTransDate: xdate(now), pReportStatus: "U", pDeficiencyRemarks: "" })}>`
+      + `<SUBJECTIVE${xa({ pChiefComplaint: [...(k.cc || []), k.ccOther].filter(Boolean).join("|"), pIllnessHistory: k.hpi })}/>`
+      + `<PEPERT${xa({ pSystolic: v.sys, pDiastolic: v.dia, pHr: v.hr, pRr: v.rr, pTemp: v.temp, pHeight: v.height, pWeight: v.weight })}/>`
+      + `<ICDS>${dxList(k).map((d) => `<ICD${xa({ pIcdDesc: d })}/>`).join("")}</ICDS>`
+      + Object.entries(k.labs || {}).filter(([, x]) => x.doc || x.cli).map(([code, x]) => `<DIAGNOSTIC${xa({ pDiagnosticId: code, pIsPhysicianRecommendation: x.doc === "Y" ? "Y" : "N", pIsPatientRequest: x.cli === "R" ? "Y" : "N", pOthRemarks: "" })}/>`).join("")
+      + (k.labOther ? `<DIAGNOSTIC${xa({ pDiagnosticId: "OTHERS", pIsPhysicianRecommendation: k.labOtherDoc === "Y" ? "Y" : "N", pIsPatientRequest: k.labOtherCli === "R" ? "Y" : "N", pOthRemarks: k.labOther })}/>` : "")
+      + (k.mgmtNA ? `<MANAGEMENT${xa({ pManagementId: "NA" })}/>` : (k.mgmt || []).map((m) => `<MANAGEMENT${xa({ pManagementId: m, pOthRemarks: m === "Others" ? k.mgmtOther : "" })}/>`).join(""))
+      + `</SOAP>`; }));
+  const labs = list.flatMap((c) => c.labs.filter((l) => l.result || l.waived).map((l) => `<LABRESULT${xa({ pHciCaseNo: c.caseNo || tx(c, "T"), ...pt(c), pLabCode: l.test, pLabName: (LABS[l.test] && LABS[l.test].name) || l.test, pReferralDate: xdate(l.date), pLabExamDate: xdate(l.resultDate || l.date), pResult: l.waived ? "" : l.result, pFlag: l.flag || "", pIsWaived: l.waived ? "Y" : "N", pDateAdded: xdate(now) })}/>`));
+  const meds = list.flatMap((c) => c.meds.map((m) => { const g = gamotOf(m.drug);
+    return `<MEDICINE${xa({ pHciCaseNo: c.caseNo || tx(c, "T"), ...pt(c), pGenericName: m.drug, pCategory: g ? progOf(g) : "", pQuantity: m.qty, pDuration: m.days, pInstruction: m.sig, pIsDispensed: m.dispensed ? "Y" : "N", pDispensedDate: m.dispensed ? xdate(m.dispensedDate || now) : "", pDateAdded: xdate(now) })}/>`; }));
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<PCB${xa({ pHciAccreNo: acc, pEnlistTotalCnt: enl.length, pProfileTotalCnt: prof.length, pSoapTotalCnt: soaps.length, pLabTotalCnt: labs.length, pMedTotalCnt: meds.length, pCertificationId: "", pHciTransmittalNumber: `R${acc.replace(/\D/g, "")}${now.replace(/-/g, "")}`, pGeneratedBy: by, pGeneratedDate: xdate(now) })}>\n`
+    + `<ENLISTMENTS>\n${enl.join("\n")}\n</ENLISTMENTS>\n<PROFILING>\n${prof.join("\n")}\n</PROFILING>\n<SOAPS>\n${soaps.join("\n")}\n</SOAPS>\n<LABRESULTS>\n${labs.join("\n")}\n</LABRESULTS>\n<MEDICINES>\n${meds.join("\n")}\n</MEDICINES>\n</PCB>\n`;
+}
+function downloadText(filename, text, type = "application/xml") {
+  const url = URL.createObjectURL(new Blob([text], { type: type + ";charset=utf-8" }));
+  const a = document.createElement("a"); a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+function XmlButton({ c, setClients, clinic }) {
+  const toast = useToast(), log = useLog(), me = useMe(); const m = xmlMissing(c);
+  const go = () => { downloadText(`KONSULTA_${((clinic.emr && clinic.emr.providerId) || HOSPITAL_ACCNO).replace(/\W/g, "")}_${pinRaw(c) || c.id}_${todayISO().replace(/-/g, "")}.xml`, buildKonsultaXml([c], clinic, me.name || ""));
+    setClients((p) => p.map((x) => (x.id === c.id ? { ...x, xmlExported: todayISO(), xmlExportedBy: me.name || "" } : x))); log("Konsulta XML exported", fullName(c)); toast("XML downloaded."); };
+  return <Btn v="white" disabled={!!m.length} title={m.length ? "Missing: " + m.join(", ") : c.xmlExported ? "Exported " + c.xmlExported : "Download Konsulta XML"} onClick={go}><Download size={13} />{c.xmlExported ? "XML ✓" : "XML"}</Btn>;
+}
+function XmlModule({ clients, setClients, clinic }) {
+  const toast = useToast(), log = useLog(), me = useMe();
+  const [from, setFrom] = useState(todayISO().slice(0, 8) + "01"); const [to, setTo] = useState(todayISO()); const [show, setShow] = useState("all");
+  const lastDate = (c) => (c.consults.length ? c.consults[c.consults.length - 1].date : c.hsa ? c.hsa.date : "");
+  const inRange = clients.filter((c) => (c.hsa || c.consults.length) && lastDate(c) >= from && lastDate(c) <= to);
+  const rows = inRange.filter((c) => show === "all" || (show === "ready" ? !xmlMissing(c).length && !c.xmlExported : show === "missing" ? xmlMissing(c).length : !c.xmlExported));
+  const exportList = (list) => {
+    const ok = list.filter((c) => !xmlMissing(c).length);
+    if (!ok.length) return toast("Nothing complete to export. Fix the missing items first.", "error");
+    const acc = ((clinic.emr && clinic.emr.providerId) || HOSPITAL_ACCNO).replace(/\W/g, "");
+    downloadText(ok.length === 1 ? `KONSULTA_${acc}_${pinRaw(ok[0]) || ok[0].id}_${todayISO().replace(/-/g, "")}.xml` : `KONSULTA_${acc}_${from.replace(/-/g, "")}-${to.replace(/-/g, "")}_${ok.length}clients.xml`, buildKonsultaXml(ok, clinic, me.name || ""));
+    const ids = new Set(ok.map((c) => c.id));
+    setClients((p) => p.map((c) => (ids.has(c.id) ? { ...c, xmlExported: todayISO(), xmlExportedBy: me.name || "" } : c)));
+    log("Konsulta XML exported", `${ok.length} client(s)${list.length > ok.length ? `, ${list.length - ok.length} skipped (incomplete)` : ""}`);
+    toast(`XML exported for ${ok.length} client(s).` + (list.length > ok.length ? ` ${list.length - ok.length} skipped: incomplete.` : ""));
+  };
+  return (
+    <Panel title={`KONSULTA XML EXPORT (${inRange.length})`} right={<span>{inRange.filter((c) => c.xmlExported).length} exported · {inRange.filter((c) => xmlMissing(c).length).length} incomplete</span>}>
+      <div className="mb-3"><Notice kind="info">For upload through the PhilHealth HCI Portal while eKonsulta is being phased out. Format is a draft based on the Konsulta XML layout: compare one file with an eKonsulta export before uploading real claims.</Notice></div>
+      <div className="flex flex-wrap gap-2 items-end mb-3">
+        <F label="From"><input type="date" className={inp()} value={from} onChange={(e) => setFrom(e.target.value)} /></F>
+        <F label="To"><input type="date" className={inp()} value={to} onChange={(e) => setTo(e.target.value)} /></F>
+        <div className="flex rounded-lg border border-slate-200 overflow-hidden text-xs">{[["all", "All"], ["ready", "Ready"], ["missing", "Incomplete"], ["notyet", "Not exported"]].map(([v, l]) => <button key={v} type="button" onClick={() => setShow(v)} className={`px-3 py-2 ${show === v ? "bg-[var(--accent)] text-white" : "bg-white text-slate-600 hover:bg-slate-50"}`}>{l}</button>)}</div>
+        <Btn v="green" className="ml-auto" onClick={() => exportList(rows)}><Download size={14} />Export {rows.filter((c) => !xmlMissing(c).length).length} as one XML</Btn>
+      </div>
+      <Table pageSize={6} cols={["Client", "PIN", "Last encounter", "Check", "Exported", ""]} rows={rows.map((c) => { const m = xmlMissing(c); return [fullName(c), c.pin || "—", lastDate(c),
+        m.length ? <span key="m" className="text-xs text-rose-700" title={m.join("\n")}>Missing: {m.slice(0, 2).join(", ")}{m.length > 2 ? ` +${m.length - 2}` : ""}</span> : <span key="m" className="text-xs text-emerald-700">Complete</span>,
+        c.xmlExported ? <span key="x" className="text-xs">{c.xmlExported}</span> : <span key="x" className="text-xs text-slate-400">Not yet</span>,
+        <Btn key="b" v="info" disabled={!!m.length} onClick={() => exportList([c])}><Download size={13} />XML</Btn>]; })} empty="No FPE or consultation in this date range." />
     </Panel>
   );
 }
 
 /* ---------- Audit & reports ---------- */
-function AuditModule({ clients, clinic, audit }) {
+function AuditModule({ clients, setClients, clinic, audit }) {
   const [tab, setTab] = useState("activity"); const [aq, setAq] = useState("");
   const expiring = [...clinic.docs.map((d) => ({ n: d.type + " " + d.ref, exp: d.expires })), ...clinic.physicians.map((p) => ({ n: "PRC " + p.name, exp: p.expiry }))].sort((a, b) => a.exp.localeCompare(b.exp));
   const count = (f) => clients.filter(f).length;
-  const tabs = [["activity", "Activity"], ["expiry", "Document expiry"], ["summary", "Summary"], ["eKAS", "eKAS"], ["ePresS", "ePresS"], ["xml", "XML"]];
+  const tabs = [["activity", "Activity"], ["expiry", "Document expiry"], ["summary", "Summary"], ["eKAS", "eKAS"], ["ePresS", "ePresS"], ["xml", "XML export"]];
   return (
     <div>
       <div className="flex flex-wrap gap-1 mb-4 border-b border-slate-200">{tabs.map(([k, l]) => <button key={k} type="button" onClick={() => setTab(k)} className={`px-3 py-2 text-sm border-b-2 ${tab === k ? "border-[var(--accent)] text-[var(--accent)] font-semibold" : "border-transparent text-slate-500"}`}>{l}</button>)}</div>
       {tab === "activity" && <Panel title={`ACTIVITY HISTORY (${audit.length})`}><div className="relative mb-3"><Search size={14} className="absolute left-2 top-3 text-slate-400" /><input className={inp() + " pl-7"} placeholder="Search user, action or detail" value={aq} onChange={(e) => setAq(e.target.value)} /></div><Table key={aq} cols={["When", "User", "Action", "Detail"]} rows={audit.filter((a) => (a.user + " " + a.action + " " + a.detail).toLowerCase().includes(aq.toLowerCase())).map((a) => [a.ts, a.user, a.action, a.detail])} empty="No matching activity." /></Panel>}
       {tab === "expiry" && <Panel title="DOCUMENT & LICENSE EXPIRY"><Table cols={["Item", "Expires", "Days left", "Status"]} rows={expiring.map((x) => [x.n, x.exp, daysUntil(x.exp), <Badge key={x.n} s={docStatus({ expires: x.exp })} />])} /></Panel>}
       {tab === "summary" && <Panel title="OPERATIONAL SUMMARY"><Table cols={["Measure", "Count"]} rows={[["Registered clients", clients.length], ["FPE in progress", count((c) => patientStatus(c) === "FPE In Progress")], ["Awaiting empanelment", count((c) => patientStatus(c) === "Awaiting Empanelment")], ["Ready for care", count((c) => patientStatus(c) === "Ready for Care")], ["Consultations completed", count((c) => c.consults.length)], ["Validation failed", count((c) => subStatus(c) === "Validation Failed")], ["Pending acknowledgment", count((c) => subStatus(c) === "Pending Acknowledgment")], ["Acknowledged", count((c) => subStatus(c) === "Acknowledged")], ["Open referrals", clients.reduce((a, c) => a + c.referrals.filter((r) => r.status !== "Closed").length, 0)]]} /></Panel>}
-      {["eKAS", "ePresS", "xml"].includes(tab) && <ReportsModule key={tab} clients={clients} kind={tab} />}
+      {tab === "eKAS" && <EkasModule clients={clients} setClients={setClients} clinic={clinic} />}
+      {tab === "xml" && <XmlModule clients={clients} setClients={setClients} clinic={clinic} />}
+      {["ePresS"].includes(tab) && <ReportsModule key={tab} clients={clients} kind={tab} />}
     </div>
   );
 }
@@ -1540,11 +1902,11 @@ const PAY_STATUS = ["Awaiting Payment", "Under Review", "Cheque Issued", "Paymen
 const PAY_BADGE = { "Awaiting Payment": "bg-slate-100 text-slate-600", "Under Review": "bg-sky-100 text-sky-700", "Cheque Issued": "bg-amber-100 text-amber-700", "Payment Received": "bg-emerald-100 text-emerald-700", "Short-paid": "bg-rose-100 text-rose-700" };
 // Historical tranche batches (dummy). The current month is built from real completed tranches via "New batch".
 const SEED_PAYMENTS = [
-  { id: 1, ref: "TR1-2026-05", period: monthOffset(-5), type: "1st tranche", clients: 45, expected: 45 * 680, received: 45 * 680, status: "Payment Received", method: "Bank transfer", payRef: "ADA-77120", paidOn: addDays(-130) },
-  { id: 2, ref: "TR2-2026-06", period: monthOffset(-4), type: "2nd tranche", clients: 30, expected: 30 * 1020, received: 30 * 1020, status: "Payment Received", method: "Cheque deposited", payRef: "OR-10421", paidOn: addDays(-100), chequeNo: "004518", chequeDate: addDays(-112), bank: "Land Bank" },
-  { id: 3, ref: "TR1-2026-07", period: monthOffset(-3), type: "1st tranche", clients: 52, expected: 52 * 680, received: 49 * 680, status: "Payment Received", method: "Bank transfer", payRef: "ADA-80433", paidOn: addDays(-70), note: "3 clients denied (₱2,040): awaiting explanation" },
-  { id: 4, ref: "TR2-2026-08", period: monthOffset(-2), type: "2nd tranche", clients: 40, expected: 40 * 1020, received: 0, status: "Cheque Issued", chequeNo: "004977", chequeDate: addDays(-41), bank: "Land Bank" },
-  { id: 5, ref: "TR1-2026-09", period: monthOffset(-1), type: "1st tranche", clients: 60, expected: 60 * 680, received: 0, status: "Under Review" },
+  { id: 1, ref: "TR1-" + monthOffset(-5), period: monthOffset(-5), type: "1st tranche", clients: 45, expected: 45 * 680, received: 45 * 680, status: "Payment Received", method: "Bank transfer", payRef: "ADA-77120", paidOn: addDays(-130) },
+  { id: 2, ref: "TR2-" + monthOffset(-4), period: monthOffset(-4), type: "2nd tranche", clients: 30, expected: 30 * 1020, received: 30 * 1020, status: "Payment Received", method: "Cheque deposited", payRef: "OR-10421", paidOn: addDays(-100), chequeNo: "004518", chequeDate: addDays(-112), bank: "Land Bank" },
+  { id: 3, ref: "TR1-" + monthOffset(-3), period: monthOffset(-3), type: "1st tranche", clients: 52, expected: 52 * 680, received: 49 * 680, status: "Payment Received", method: "Bank transfer", payRef: "ADA-80433", paidOn: addDays(-70), note: "3 clients denied (₱2,040): awaiting explanation" },
+  { id: 4, ref: "TR2-" + monthOffset(-2), period: monthOffset(-2), type: "2nd tranche", clients: 40, expected: 40 * 1020, received: 0, status: "Cheque Issued", chequeNo: "004977", chequeDate: addDays(-41), bank: "Land Bank" },
+  { id: 5, ref: "TR1-" + monthOffset(-1), period: monthOffset(-1), type: "1st tranche", clients: 60, expected: 60 * 680, received: 0, status: "Under Review" },
 ];
 const payStates = (p) => (p.status === "Payment Received" && p.received < p.expected ? ["Payment Received", "Short-paid"] : [p.status]);
 
@@ -1595,11 +1957,65 @@ const shortPeso = (n) => (n >= 1000 ? "₱" + (n / 1000).toFixed(n >= 100000 ? 0
 const unbilled = (clients, ym) => clients.flatMap((c) => [["t1", "1st tranche", tranche1(c)], ["t2", "2nd tranche", tranche2(c)]]
   .filter(([k, , t]) => t.done && t.date.slice(0, 7) === ym && !(c.billed && c.billed[k])).map(([k, label, t]) => ({ c, k, label, amount: t.amount, date: t.date })));
 
-function PaymentsModule({ payments, setPayments, clients, setClients }) {
+// ---- Report export helpers (CSV opens in Excel; print view can be saved as PDF) ----
+const csvCell = (v) => { const x = v === null || v === undefined ? "" : String(v); return /[",\n]/.test(x) ? `"${x.replace(/"/g, '""')}"` : x; };
+function downloadCSV(filename, cols, rows) {
+  const body = "\uFEFF" + [cols, ...rows].map((r) => r.map(csvCell).join(",")).join("\r\n");   // BOM so Excel shows ₱ and ñ correctly
+  const url = URL.createObjectURL(new Blob([body], { type: "text/csv;charset=utf-8" }));
+  const a = document.createElement("a"); a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+const esc = (x) => String(x ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+function printReport(title, subtitle, cols, rows, totals, by, money = []) {
+  const fmt = (v, k) => (typeof v === "number" ? (money.includes(k) ? v.toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : v.toLocaleString("en-PH")) : v);
+  const w = window.open("", "_blank"); if (!w) return false;
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>
+    body{font-family:Arial,sans-serif;color:#111;margin:24px} .hd{display:flex;align-items:center;gap:14px;border-bottom:2px solid #0a9d98;padding-bottom:10px;margin-bottom:12px}
+    .hd img{height:46px} h1{font-size:17px;margin:0} .sub{font-size:12px;color:#555} table{width:100%;border-collapse:collapse;font-size:11px;margin-top:8px}
+    th{background:#f1f5f9;text-align:left;padding:6px;border:1px solid #cbd5e1} td{padding:5px 6px;border:1px solid #e2e8f0} tfoot td{font-weight:bold;background:#f8fafc}
+    .meta{font-size:10px;color:#666;margin-top:14px} .num{text-align:right} @media print{button{display:none}}</style></head><body>
+    <div class="hd"><img src="${location.origin}/logo.png" alt=""><div><h1>${esc(title)}</h1><div class="sub">${esc(HOSPITAL)} · ${esc(HOSPITAL_ADDR)} · ${esc(subtitle)}</div></div></div>
+    <button onclick="window.print()" style="padding:6px 12px;margin-bottom:8px">Print / Save as PDF</button>
+    <table><thead><tr>${cols.map((c) => `<th>${esc(c)}</th>`).join("")}</tr></thead><tbody>${rows.map((r) => `<tr>${r.map((v, k) => `<td class="${typeof v === "number" ? "num" : ""}">${esc(fmt(v, k))}</td>`).join("")}</tr>`).join("") || `<tr><td colspan="${cols.length}">No records for this period.</td></tr>`}</tbody>
+    ${totals ? `<tfoot><tr>${totals.map((v, k) => `<td class="${typeof v === "number" ? "num" : ""}">${esc(fmt(v, k))}</td>`).join("")}</tr></tfoot>` : ""}</table>
+    <div class="meta">Generated ${esc(new Date().toLocaleString())} by ${esc(by)} · Internal report (amounts in PHP).</div></body></html>`);
+  w.document.close(); setTimeout(() => { try { w.focus(); w.print(); } catch (e) {} }, 400); return true;
+}
+// Builds the three finance reports for months [from..to] (YYYY-MM).
+function buildReports(clients, payments, from, to) {
+  const inRange = (d) => d && d.slice(0, 7) >= from && d.slice(0, 7) <= to;
+  const tr = clients.map((c) => ({ c, t1: tranche1(c), t2: tranche2(c) })).filter(({ t1, t2 }) => (t1.done && inRange(t1.date)) || (t2.done && inRange(t2.date)));
+  const tranche = {
+    title: "Tranche Report", cols: ["PIN", "Client", "Type", "1st tranche", "1st date", "1st amount", "1st batch", "2nd tranche", "2nd date", "2nd amount", "2nd batch", "Client total"],
+    rows: tr.map(({ c, t1, t2 }) => { const a1 = t1.done && inRange(t1.date) ? t1.amount : 0, a2 = t2.done && inRange(t2.date) ? t2.amount : 0;
+      return [c.pin || "—", fullName(c), TYPES[c.type], t1.done ? "Done" : "Not yet", t1.done ? t1.date : "", a1, (c.billed && c.billed.t1) || "", t2.done ? "Done" : t2.pending ? `${t2.pending} lab pending` : "Not yet", t2.done ? t2.date : "", a2, (c.billed && c.billed.t2) || "", a1 + a2]; }),
+  };
+  tranche.money = [5, 9, 11];
+  tranche.totals = ["", `${tranche.rows.length} client(s)`, "", "", "", tranche.rows.reduce((a, r) => a + r[5], 0), "", "", "", tranche.rows.reduce((a, r) => a + r[9], 0), "", tranche.rows.reduce((a, r) => a + r[11], 0)];
+  const ps = payments.filter((p) => p.period >= from && p.period <= to).sort((a, b) => a.period.localeCompare(b.period));
+  const payment = {
+    title: "Payments Report", cols: ["Batch", "Period", "Tranche", "Clients", "Expected", "Received", "Variance", "Status", "Method", "Cheque no.", "Cheque date", "OR / bank ref.", "Date received", "Remarks"],
+    rows: ps.map((p) => { const rec = p.status === "Payment Received" ? p.received : 0; return [p.ref, monthName(p.period), p.type, p.clients || (p.items || []).length || "", p.expected, rec, p.status === "Payment Received" ? rec - p.expected : 0, payStates(p).join(" / "), p.method || "", p.chequeNo || "", p.chequeDate || "", p.payRef || "", p.paidOn || "", p.note || ""]; }),
+  };
+  payment.money = [4, 5, 6];
+  payment.totals = ["Total", "", "", payment.rows.reduce((a, r) => a + (+r[3] || 0), 0), payment.rows.reduce((a, r) => a + r[4], 0), payment.rows.reduce((a, r) => a + r[5], 0), payment.rows.reduce((a, r) => a + r[6], 0), "", "", "", "", "", "", ""];
+  const months = []; for (let d = new Date(from + "-01"); d.toISOString().slice(0, 7) <= to; d.setMonth(d.getMonth() + 1)) months.push(d.toISOString().slice(0, 7));
+  const summary = {
+    title: "Monthly Tranche & Payment Summary", cols: ["Month", "1st tranches", "1st amount", "2nd tranches", "2nd amount", "Earned (app)", "Billed batches", "Expected (batches)", "Received", "Outstanding"],
+    rows: months.map((m) => { const t1 = clients.filter((c) => { const t = tranche1(c); return t.done && t.date.slice(0, 7) === m; }).length, t2 = clients.filter((c) => { const t = tranche2(c); return t.done && t.date.slice(0, 7) === m; }).length;
+      const b = payments.filter((p) => p.period === m), exp = b.reduce((a, p) => a + p.expected, 0), rec = b.filter((p) => p.status === "Payment Received").reduce((a, p) => a + p.received, 0);
+      return [monthName(m), t1, t1 * TRANCHE_RATE.t1, t2, t2 * TRANCHE_RATE.t2, t1 * TRANCHE_RATE.t1 + t2 * TRANCHE_RATE.t2, b.length, exp, rec, Math.max(0, exp - rec)]; }),
+  };
+  summary.money = [2, 4, 5, 7, 8, 9];
+  summary.totals = ["Total", ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((k) => summary.rows.reduce((a, r) => a + r[k], 0))];
+  return { tranche, payment, summary };
+}
+
+function PaymentsModule({ payments, setPayments, clients, setClients, me }) {
   const toast = useToast(), log = useLog();
   const [filter, setFilter] = useState("All"); const [q, setQ] = useState("");
   const [modal, setModal] = useState(null);
   const [ym, setYm] = useState(todayISO().slice(0, 7)); const [kinds, setKinds] = useState({ t1: true, t2: true });
+  const [rFrom, setRFrom] = useState(monthOffset(-5)); const [rTo, setRTo] = useState(todayISO().slice(0, 7));
   const sum = (arr, k) => arr.reduce((a, p) => a + (+p[k] || 0), 0);
   const recd = payments.filter((p) => p.status === "Payment Received"), cheque = payments.filter((p) => p.status === "Cheque Issued");
   const waiting = payments.filter((p) => p.status === "Awaiting Payment" || p.status === "Under Review");
@@ -1653,7 +2069,8 @@ function PaymentsModule({ payments, setPayments, clients, setClients }) {
           <div className="ml-auto text-sm">Total: <b>{peso(pick.reduce((a, x) => a + x.amount, 0))}</b> · {pick.length} tranche(s)</div>
           <Btn v="green" disabled={!pick.length} onClick={createBatch}><Plus size={14} />Create batch</Btn>
         </div>
-        <Table pageSize={5} cols={["Client", "PIN", "Tranche", "Completed", "Amount"]} rows={pick.map((x) => [fullName(x.c), x.c.pin || "—", x.label, x.date, peso(x.amount)])} empty="No completed tranches waiting to be billed for this month." />
+        {pick.some((x) => ekasState(x.c) !== "Signed") && <div className="mb-2"><Notice>{new Set(pick.filter((x) => ekasState(x.c) !== "Signed").map((x) => x.c.id)).size} client(s) in this batch have no signed eKAS yet. Collect the signed slips (Audit &amp; Reports → eKAS) before submitting the claim.</Notice></div>}
+        <Table pageSize={5} cols={["Client", "PIN", "Tranche", "Completed", "Amount", "eKAS"]} rows={pick.map((x) => [fullName(x.c), x.c.pin || "—", x.label, x.date, peso(x.amount), <EkasBadge key="e" s={ekasState(x.c)} />])} empty="No completed tranches waiting to be billed for this month." />
       </Panel>
       <Panel title="CHEQUES">
         <Table cols={["Batch", "Cheque no.", "Bank", "Cheque date", "Days out", "Amount", ""]} rows={cheque.map((p) => { const d = -daysUntil(p.chequeDate); return [p.ref, p.chequeNo, p.bank, p.chequeDate, <span key={p.id} className={d >= 30 ? "text-rose-600 font-medium" : ""}>{d}{d >= 30 ? " · follow up" : ""}</span>, peso(p.expected), <Btn key={"b" + p.id} v="green" onClick={() => setModal({ p, mode: "receive" })}>Mark received</Btn>]; })} empty="No cheques outstanding." />
@@ -1666,6 +2083,39 @@ function PaymentsModule({ payments, setPayments, clients, setClients }) {
         <Table pageSize={3} cols={["Batch", "Period", "Tranche", "Clients", "Expected", "Received", "Status", ""]} rows={rows.map((p) => [<span key="r" className="text-xs font-medium whitespace-nowrap">{p.ref}</span>, monthName(p.period), <span key="t" className="text-xs">{p.type}</span>, <span key="c" title={(p.items || []).map((x) => `${x.name} (${x.tranche})`).join("\n")}>{p.clients || (p.items || []).length || "—"}</span>, peso(p.expected), p.status === "Payment Received" ? peso(p.received) : "—",
           <div key={p.id} className="flex gap-1 flex-wrap">{payStates(p).map((x) => <span key={x} className={`px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ${PAY_BADGE[x]}`}>{x}</span>)}</div>,
           <div key={"a" + p.id} className="flex gap-1">{(p.status === "Awaiting Payment" || p.status === "Under Review") && <>{p.status === "Awaiting Payment" && <Btn v="white" onClick={() => { patch(p.id, { status: "Under Review" }, "Batch under review"); toast("Marked under review."); }}>Review</Btn>}<Btn v="info" onClick={() => setModal({ p, mode: "cheque" })}>Cheque</Btn><Btn v="green" onClick={() => setModal({ p, mode: "receive" })}>Received</Btn></>}{p.status === "Cheque Issued" && <Btn v="green" onClick={() => setModal({ p, mode: "receive" })}>Received</Btn>}</div>])} empty="No batches match." />
+      </Panel>
+      <Panel title="REPORTS">
+        {(() => {
+          const bad = rFrom > rTo; const R = bad ? null : buildReports(clients, payments, rFrom, rTo);
+          const by = me ? `${me.name} (${ROLES[me.role]})` : "";
+          const span = `${monthName(rFrom)} – ${monthName(rTo)}`;
+          const file = (k) => `Sunga_${k}_${rFrom}_to_${rTo}.csv`;
+          const act = (key, kind) => {
+            const x = R[key];
+            if (kind === "csv") { downloadCSV(file(x.title.replace(/[^A-Za-z]+/g, "_").replace(/_+$/, "")), x.cols, [...x.rows, x.totals]); toast(`${x.title} downloaded.`); }
+            else if (!printReport(x.title, span, x.cols, x.rows, x.totals, by, x.money)) return toast("Allow pop-ups for this site to print the report.", "error");
+            log(kind === "csv" ? "Report downloaded" : "Report printed", `${x.title}, ${span}`);
+          };
+          const info = { tranche: ["Per client: 1st/2nd tranche status, dates, amounts and batch.", R && `${R.tranche.rows.length} client(s) · ${peso(R.tranche.totals[11])}`],
+            payment: ["Per batch: expected, received, variance, cheque and receipt details.", R && `${R.payment.rows.length} batch(es) · received ${peso(R.payment.totals[5])}`],
+            summary: ["Per month: tranches earned, billed, received and outstanding.", R && `${R.summary.rows.length} month(s) · outstanding ${peso(R.summary.totals[9])}`] };
+          return <>
+            <div className="flex flex-wrap items-end gap-3 mb-4">
+              <F label="From month"><input type="month" className={inp()} value={rFrom} onChange={(e) => setRFrom(e.target.value)} /></F>
+              <F label="To month"><input type="month" className={inp()} value={rTo} onChange={(e) => setRTo(e.target.value)} /></F>
+              <div className="flex gap-1 text-xs">{[["This month", 0, 0], ["Last 3 months", -2, 0], ["Last 6 months", -5, 0], ["This year", null, 0]].map(([l, a]) => <button key={l} type="button" onClick={() => { setRFrom(a === null ? todayISO().slice(0, 4) + "-01" : monthOffset(a)); setRTo(todayISO().slice(0, 7)); }} className="px-2.5 py-2 rounded-lg border border-slate-200 hover:bg-slate-50">{l}</button>)}</div>
+            </div>
+            {bad ? <Notice>"From" month must not be after "To" month.</Notice> :
+              <div className="grid md:grid-cols-3 gap-3">{[["tranche", "Tranche report", Users], ["payment", "Payments report", Wallet], ["summary", "Monthly summary", FileText]].map(([k, l, I]) => (
+                <div key={k} className="border border-slate-200 rounded-xl p-4 flex flex-col">
+                  <div className="flex items-center gap-2 font-semibold text-sm"><I size={16} className="text-[var(--accent)]" />{l}</div>
+                  <p className="text-xs text-slate-500 mt-1 flex-1">{info[k][0]}</p>
+                  <div className="text-xs text-slate-700 font-medium my-2">{info[k][1]}</div>
+                  <div className="flex gap-2"><Btn v="green" onClick={() => act(k, "csv")}><Upload size={14} className="rotate-180" />Excel (CSV)</Btn><Btn v="white" onClick={() => act(k, "print")}><FileText size={14} />Print / PDF</Btn></div>
+                </div>))}</div>}
+            <p className="mt-3 text-[11px] text-slate-400">CSV files open in Excel. Print / PDF opens a formatted report; choose "Save as PDF" in the print window. Report downloads are recorded in the audit log.</p>
+          </>;
+        })()}
       </Panel>
       {modal && <PayModal key={modal.p.id + modal.mode} p={modal.p} mode={modal.mode} onClose={() => setModal(null)} onSave={(d) => { patch(modal.p.id, d, modal.mode === "cheque" ? "Cheque recorded" : "Payment received"); toast(modal.mode === "cheque" ? "Cheque recorded." : "Payment recorded."); setModal(null); }} />}
     </Paged>
@@ -1944,7 +2394,7 @@ function ChatWidget({ ctx, go, user }) {
 /* ---------- App shell ---------- */
 const SYNC_STEPS = ["Validating records", "Building batch", "Encrypting payload", "Transmitting via EMR interface (mock)"];
 const THEMES = [
-  { id: "sunga", name: "Sunga Teal" }, { id: "warm", name: "Warm Community" },
+  { id: "sunga", name: "Sunga Teal" }, { id: "warm", name: "Warm Community" }, { id: "ocean", name: "Ocean Blue" }, { id: "forest", name: "Forest Green" }, { id: "royal", name: "Royal Purple" }, { id: "rose", name: "Rose Pink" }, { id: "sunset", name: "Sunset Orange" }, { id: "maroon", name: "Maroon" }, { id: "gold", name: "Harvest Gold" }, { id: "slate", name: "Slate Gray" },
   { id: "midnight", name: "Midnight" }, { id: "contrast", name: "High Contrast" },
 ];
 const NAV = [
@@ -1962,7 +2412,7 @@ const PERMS = {
   home: ALL,
   clinic: ["superadmin", "admin"], docs: ["superadmin", "admin"], emrcfg: ["superadmin", "admin", "encoder"],
   reg: ["superadmin", "admin", "encoder", "nurse"], hsa: ["superadmin", "encoder", "nurse", "doctor"], emp: ["superadmin", "admin", "encoder", "nurse"],
-  consult: ["superadmin", "doctor"], diag: ["superadmin", "nurse", "doctor"], med: ["superadmin", "nurse", "doctor"],
+  consult: ["superadmin", "doctor", "encoder"], diag: ["superadmin", "nurse", "doctor"], med: ["superadmin", "nurse", "doctor"],
   pay: ["superadmin", "admin"], sub: ["superadmin", "admin", "encoder"], audit: ["superadmin", "admin"], upl: ["superadmin", "encoder"],
   users: ["superadmin", "admin"], kb: ["superadmin", "admin"], profile: ALL,
 };
@@ -2040,7 +2490,7 @@ function ProfileModule({ me, setUsers, theme, setTheme, startTab }) {
       </div>}
       {tab === "prefs" && <div className="space-y-3">
         <div className="text-sm font-semibold">Theme <span className="font-normal text-xs text-slate-500">(applied every time you sign in)</span></div>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">{THEMES.map((t) => <button key={t.id} type="button" onClick={() => pickTheme(t.id)} className={`theme-${t.id} text-left rounded-xl border-2 p-3 ${theme === t.id ? "border-[var(--accent)]" : "border-slate-200"}`}><div className="h-10 rounded-lg mb-2" style={{ background: "var(--banner)" }} /><div className="flex items-center justify-between text-sm font-medium">{t.name}{theme === t.id && <CheckIcon size={14} className="text-[var(--accent)]" />}</div></button>)}</div>
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">{THEMES.map((t) => <button key={t.id} type="button" onClick={() => pickTheme(t.id)} className={`theme-${t.id} text-left rounded-xl border-2 p-3 ${theme === t.id ? "border-[var(--accent)]" : "border-slate-200"}`}><div className="h-10 rounded-lg mb-2" style={{ background: "var(--banner)" }} /><div className="flex items-center justify-between text-sm font-medium">{t.name}{theme === t.id && <CheckIcon size={14} className="text-[var(--accent)]" />}</div></button>)}</div>
       </div>}
     </Panel>
   );
@@ -2188,7 +2638,7 @@ export default function EKonsultaApp() {
   const role = current.role;
   const allowed = can(role, page);
   return (
-    <AppCtx.Provider value={{ toast, log }}>
+    <AppCtx.Provider value={{ toast, log, me: current }}>
       <div className={`theme-${theme} h-screen overflow-hidden flex flex-col bg-slate-50 text-slate-800`}>
         <header className="bg-white border-b border-slate-200 shrink-0 z-30">
           <div className="flex items-center justify-between px-4 md:px-6 py-2.5 gap-3">
@@ -2202,12 +2652,11 @@ export default function EKonsultaApp() {
               <span className="hidden md:inline"><Badge s={cst} /></span>
               <div className="relative">
                 <button type="button" onClick={() => setThemeMenu(!themeMenu)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 text-xs font-medium hover:bg-slate-50"><Palette size={14} className="text-[var(--accent)]" /><span className="hidden md:inline">{THEMES.find((t) => t.id === theme).name}</span><ChevronDown size={12} /></button>
-                {themeMenu && <div className="absolute right-0 mt-1 w-48 bg-white border border-slate-200 rounded-xl shadow-lg py-1 z-40">{THEMES.map((t) => <button key={t.id} type="button" onClick={() => { setTheme(t.id); setThemeMenu(false); }} className="w-full flex items-center justify-between px-3 py-2 text-xs hover:bg-slate-50">{t.name}{theme === t.id && <CheckIcon size={14} className="text-[var(--accent)]" />}</button>)}</div>}
+                {themeMenu && <div className="absolute right-0 mt-1 w-48 max-h-80 overflow-y-auto bg-white border border-slate-200 rounded-xl shadow-lg py-1 z-40">{THEMES.map((t) => <button key={t.id} type="button" onClick={() => { setTheme(t.id); setThemeMenu(false); }} className="w-full flex items-center justify-between px-3 py-2 text-xs hover:bg-slate-50">{t.name}{theme === t.id && <CheckIcon size={14} className="text-[var(--accent)]" />}</button>)}</div>}
               </div>
               {can(role, "sub") && <button type="button" onClick={runSync} className="hidden sm:flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-semibold text-white bg-[var(--accent)] hover:bg-[var(--accent-h)]"><UploadCloud size={14} />Submit ready records</button>}
               <div className="relative flex items-center gap-1">
                 <button type="button" aria-label="Open profile menu" aria-expanded={userMenu} onClick={() => setUserMenu(!userMenu)} className="flex items-center gap-2 rounded-xl pl-1 pr-2 py-1 hover:bg-slate-100"><Avatar u={current} /><div className="hidden lg:block leading-tight text-left"><div className="text-xs font-semibold">{current.name}</div><div className="text-[10px] text-slate-500">{ROLES[role]}</div></div><ChevronDown size={12} className="text-slate-400" /></button>
-                <button type="button" title="Sign out" aria-label="Sign out" onClick={logout} className="p-2 rounded-lg hover:bg-slate-100 text-slate-500"><LogOut size={16} /></button>
                 {userMenu && <div className="absolute right-0 top-full mt-1 w-60 bg-white border border-slate-200 rounded-xl shadow-lg py-1 z-40">
                   <div className="px-3 py-2 border-b border-slate-100"><div className="text-sm font-semibold truncate">{current.name}</div><div className="text-[11px] text-slate-500">{current.title ? `${current.title} · ` : ""}{current.username} · {ROLES[role]}</div></div>
                   {[["profile", "My profile", Users], ["security", "Change password", KeyRound], ["prefs", "Preferences", Palette]].map(([t, l, I]) => <button key={t} type="button" onClick={() => { setProfileTab(t); setUserMenu(false); go("profile"); }} className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-slate-50"><I size={14} className="text-slate-500" />{l}</button>)}
@@ -2239,18 +2688,18 @@ export default function EKonsultaApp() {
               {allowed && PATIENT_PAGES.includes(page) && cst !== "Approval Verified" && <div className="mb-3 flex items-center gap-2 text-xs text-slate-600 bg-slate-100 border border-slate-200 rounded-lg px-3 py-1.5"><Info size={14} className="shrink-0" />Clinic approval not verified ({cst}): records save as drafts; EMR submission is blocked.</div>}
               {!allowed && <Panel title="ACCESS RESTRICTED"><div className="flex items-center gap-3 text-sm text-slate-600"><Lock size={18} />Your role ({ROLES[role]}) does not have access to this module.</div></Panel>}
               {allowed && <>
-              {page === "home" && <HomeModule clients={clients} go={go} clinic={clinic} onSync={runSync} role={role} me={current} payments={payments} />}
+              {page === "home" && <HomeModule clients={clients} go={go} clinic={clinic} onSync={runSync} role={role} me={current} payments={payments} users={users} />}
               {page === "clinic" && <ClinicModule clinic={clinic} setClinic={setClinic} />}
               {page === "docs" && <DocsModule clinic={clinic} setClinic={setClinic} />}
               {page === "emrcfg" && <EmrConfigModule clinic={clinic} setClinic={setClinic} />}
               {page === "reg" && <RegistrationModule clients={clients} setClients={setClients} go={go} role={role} />}
               {page === "hsa" && <HSAModule clients={clients} setClients={setClients} />}
-              {page === "consult" && <ConsultModule clients={clients} setClients={setClients} />}
-              {page === "diag" && <DiagnosticsModule clients={clients} setClients={setClients} />}
+              {page === "consult" && <ConsultModule clients={clients} setClients={setClients} clinic={clinic} />}
+              {page === "diag" && <DiagnosticsModule clients={clients} setClients={setClients} clinic={clinic} />}
               {page === "med" && <MedicineModule clients={clients} setClients={setClients} />}
-              {page === "pay" && <PaymentsModule payments={payments} setPayments={setPayments} clients={clients} setClients={setClients} />}
+              {page === "pay" && <PaymentsModule payments={payments} setPayments={setPayments} clients={clients} setClients={setClients} me={current} />}
               {page === "sub" && <SubmissionModule clients={clients} setClients={setClients} clinic={clinic} />}
-              {page === "audit" && <AuditModule clients={clients} clinic={clinic} audit={audit} />}
+              {page === "audit" && <AuditModule clients={clients} setClients={setClients} clinic={clinic} audit={audit} />}
               {page === "upl" && <UploaderModule />}
               {page === "users" && <UsersModule users={users} setUsers={setUsers} me={current} />}
               {page === "kb" && <KnowledgeModule me={current} />}
