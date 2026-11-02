@@ -1795,9 +1795,27 @@ function DiagnosticsModule({ clients, setClients, clinic, users = [] }) {
 
 /* ---------- EMR submission ---------- */
 // Transmittal flow mirrors eKonsulta: create (UNVALIDATED) → Prepare → View/Export XML → Validate XML → Send (enabled only when VALIDATED) → acknowledgment.
+// Transmitted value per month (last 6 months), sent vs acknowledged.
+function TransmittedChart({ batches, showAmt, amtOf }) {
+  const months = Array.from({ length: 6 }, (_, k) => { const d = new Date(todayISO()); d.setDate(1); d.setMonth(d.getMonth() - (5 - k)); return d.toISOString().slice(0, 7); });
+  const sent = batches.filter((b) => b.stage === "SENT");
+  const val = (b) => (showAmt ? amtOf(b) : b.items.length);
+  const data = months.map((m) => { const bs = sent.filter((b) => (b.date || "").slice(0, 7) === m); return { m, total: bs.reduce((a, b) => a + val(b), 0), ack: bs.reduce((a, b) => a + (showAmt ? b.items.filter((c) => c.sub.ack).length * (b.tranche === "Second" ? TRANCHE_RATE.t2 : TRANCHE_RATE.t1) : b.items.filter((c) => c.sub.ack).length), 0), n: bs.length }; });
+  const max = Math.max(1, ...data.map((d) => d.total)); const fmt = (v) => (showAmt ? peso(v) : `${v} rec.`);
+  const tot = data.reduce((a, d) => a + d.total, 0), ack = data.reduce((a, d) => a + d.ack, 0);
+  return <div className="mb-3 p-3 rounded-xl border border-slate-200 flex gap-6 items-end">
+    <div className="shrink-0 space-y-2 text-sm"><div><div className="text-[11px] uppercase tracking-wide text-slate-500">Transmitted (6 months)</div><div className="text-lg font-semibold">{fmt(tot)}</div></div><div><div className="text-[11px] uppercase tracking-wide text-slate-500">Acknowledged</div><div className="font-semibold text-emerald-700">{fmt(ack)}</div></div>
+      <div className="flex gap-3 text-[11px] text-slate-500"><span className="flex items-center gap-1"><i className="w-2.5 h-2.5 rounded-sm bg-[var(--accent-soft)] border border-[var(--accent)]" />Sent</span><span className="flex items-center gap-1"><i className="w-2.5 h-2.5 rounded-sm bg-[var(--accent)]" />Acknowledged</span></div></div>
+    <div className="flex-1 flex items-end gap-3 h-28">{data.map((d) => <div key={d.m} className="flex-1 flex flex-col items-center gap-1 h-full justify-end" title={`${d.m}: ${fmt(d.total)} sent in ${d.n} transmittal(s), ${fmt(d.ack)} acknowledged`}>
+      <span className="text-[10px] text-slate-600 whitespace-nowrap">{d.total ? fmt(d.total) : ""}</span>
+      <div className="w-full max-w-[56px] rounded-t-md bg-[var(--accent-soft)] border border-[var(--accent)] relative overflow-hidden" style={{ height: `${Math.max(d.total ? 6 : 2, (d.total / max) * 72)}px` }}><div className="absolute bottom-0 left-0 right-0 bg-[var(--accent)]" style={{ height: `${d.total ? (d.ack / d.total) * 100 : 0}%` }} /></div>
+      <span className="text-[10px] text-slate-500">{new Date(d.m + "-01").toLocaleDateString("en-US", { month: "short" })}</span></div>)}</div>
+  </div>;
+}
 function SubmissionModule({ clients, setClients, clinic }) {
   const toast = useToast(), log = useLog(), me = useMe();
-  const [tab, setTab] = useState("records"); const [picked, setPicked] = useState([]); const [tranche, setTranche] = useState("First"); const [open, setOpen] = useState(null); const [menu, setMenu] = useState(false); const [vErr, setVErr] = useState([]);
+  const [tab, setTab] = useState("records"); const [picked, setPicked] = useState([]); const [tranche, setTranche] = useState("First"); const [open, setOpen] = useState(null); const [menu, setMenu] = useState(false); const [vErr, setVErr] = useState([]); const [confirmSend, setConfirmSend] = useState(null);
+  const showAmt = can(me.role, "pay"); const amtOf = (b) => b.items.length * (b.tranche === "Second" ? TRANCHE_RATE.t2 : TRANCHE_RATE.t1);
   const rows = clients.filter((c) => c.hsa || c.consults.length);
   const gate = gateReason(clinic);
   const ready = rows.filter((c) => subStatus(c) === "Ready to Submit");
@@ -1827,10 +1845,10 @@ function SubmissionModule({ clients, setClients, clinic }) {
       if (errs.length) { setStage(b, "UNVALIDATED"); log("Transmittal validation failed", `No. ${b.no}: ${errs.length} issue(s)`); return toast(`${errs.length} issue(s) found. Fix them, then Prepare and Validate again.`, "error"); }
       setStage(b, "VALIDATED"); log("Transmittal validated", `No. ${b.no}`); toast(`Transmittal No. ${b.no} validated. Ready to send.`);
     },
-    send: (b) => {
-      if (gate) return toast(`Blocked: ${gate}.`, "error");
+    send: (b, force) => {
+      if (gate && !force) return setConfirmSend(b);
       const txn = `SP${acc}${todayISO().replace(/-/g, "")}${String(b.no).padStart(6, "0")}`;
-      setStage(b, "SENT", { submittedAt: todayISO(), txn }); log("Transmittal sent", `No. ${b.no}, transaction ${txn}`); toast(`Transmittal No. ${b.no} sent. Awaiting acknowledgment.`);
+      setStage(b, "SENT", { submittedAt: todayISO(), txn }); log("Transmittal sent", `No. ${b.no}, transaction ${txn}, ${b.items.length} record(s), ${peso(amtOf(b))}${gate ? " (clinic approval not verified)" : ""}`); toast(`Transmittal No. ${b.no} sent: ${b.items.length} record(s)${showAmt ? `, ${peso(amtOf(b))}` : ""}. Awaiting acknowledgment.`); setConfirmSend(null);
     },
   };
   const remove = (b, c) => { setClients((p) => p.map((x) => (x.id === c.id ? { ...x, sub: null } : x))); setStage({ items: b.items.filter((x) => x.id !== c.id) }, "UNVALIDATED"); log("Removed from transmittal", `${fullName(c)} · No. ${b.no}`); };
@@ -1841,11 +1859,11 @@ function SubmissionModule({ clients, setClients, clinic }) {
     ["prepare", "Prepare Transmittal", RefreshCw, ob.stage === "UNVALIDATED" || ob.stage === "PREPARED"],
     ["xml", "View / Export XML", Download, true],
     ["validate", "Validate XML", ListChecks, ob.stage === "PREPARED"],
-    ["send", "Send Transmittal", Send, ob.stage === "VALIDATED" && !gate],
+    ["send", "Send Transmittal", Send, ob.stage === "VALIDATED"],
   ] : [];
   return (
     <Panel title="EMR VALIDATION & SUBMISSION">
-      {gate && <div className="mb-3"><Notice>Sending is blocked: {gate}. You can still create, prepare and validate transmittals.</Notice></div>}
+      {gate && <div className="mb-3"><Notice>{gate}. Record the clinic's PhilHealth accreditation in Clinic Accreditation; until then, sending asks for confirmation.</Notice></div>}
       <div className="flex gap-1 border-b border-slate-200 mb-3">{tabs.map(([v, l]) => <button key={v} type="button" onClick={() => { setTab(v); setOpen(null); setMenu(false); }} className={`px-3 py-2 text-sm border-b-2 -mb-px ${tab === v ? "border-[var(--accent)] text-[var(--accent)] font-semibold" : "border-transparent text-slate-500 hover:text-slate-800"}`}>{l}</button>)}
         <span className="ml-auto self-center text-[11px] text-slate-400">Sending and acknowledgment are simulated until a certified EMR / PhilHealth connection exists.</span></div>
       {tab === "records" && <>
@@ -1865,18 +1883,21 @@ function SubmissionModule({ clients, setClients, clinic }) {
             {c.sub && c.sub.rejected && <Btn v="warning" onClick={() => setClients((p) => p.map((x) => (x.id === c.id ? { ...x, sub: null } : x)))}>Correct & revalidate</Btn>}
           </div>]; })} empty="No encounters to submit." />
       </>}
-      {tab === "batches" && !ob && <Table pageSize={7} cols={["Transmittal No. / Code", "Created", "Tranche", "Records", "Status", ""]} rows={batches.map((b) => [<span key="n" className="whitespace-nowrap"><b>{b.no}</b> / {b.code}</span>, b.created || b.date, b.tranche, b.items.length, <span key="s" className={`px-2 py-0.5 rounded-full text-xs font-medium ${BT[bStatus(b)]}`}>{bStatus(b)}</span>, <Btn key="o" v="info" onClick={() => { setOpen(b.no); setVErr([]); }}>Open</Btn>])} empty="No transmittals yet. Select Ready records and click Create transmittal." />}
+      {tab === "batches" && !ob && <TransmittedChart batches={batches} showAmt={showAmt} amtOf={amtOf} />}
+      {tab === "batches" && !ob && <Table pageSize={5} cols={["Transmittal No. / Code", "Created", "Tranche", "Records", ...(showAmt ? ["Value"] : []), "Status", ""]} rows={batches.map((b) => [<span key="n" className="whitespace-nowrap"><b>{b.no}</b> / {b.code}</span>, b.created || b.date, b.tranche, b.items.length, ...(showAmt ? [peso(amtOf(b))] : []), <span key="s" className={`px-2 py-0.5 rounded-full text-xs font-medium ${BT[bStatus(b)]}`}>{bStatus(b)}</span>, <Btn key="o" v="info" onClick={() => { setOpen(b.no); setVErr([]); }}>Open</Btn>])} empty="No transmittals yet. Select Ready records and click Create transmittal." />}
       {tab === "batches" && ob && <div>
         <div className="flex items-center justify-between mb-2"><button type="button" onClick={() => { setOpen(null); setMenu(false); }} className="text-sm underline">← All transmittals</button>
           <div className="flex gap-2 items-center">{bStatus(ob) === "SENT" && <Btn v="info" onClick={() => ackAll(ob)}>Simulate ack (all)</Btn>}
             <div className="relative"><button type="button" aria-label="Transmittal actions" onClick={() => setMenu(!menu)} className="p-2 rounded-full hover:bg-slate-100 border border-slate-200"><MoreVertical size={16} /></button>
               {menu && <div className="absolute right-0 mt-1 w-60 bg-white border border-slate-200 rounded-xl shadow-lg py-1 z-40">{MENU.map(([k, l, I, on]) => <button key={k} type="button" disabled={!on} onClick={() => { setMenu(false); act[k](ob); }} className="w-full flex items-center gap-3 px-3 py-2 text-sm hover:bg-slate-50 disabled:text-slate-300 disabled:hover:bg-white"><I size={16} />{l}</button>)}</div>}</div></div></div>
-        <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-3 p-3 rounded-xl border border-slate-200 text-sm">{[["Transmission No. / Code", `${ob.no} / ${ob.code}`, "md:col-span-2"], ["Transaction No.", ob.txn || "None", "md:col-span-2"], ["Tranche", ob.tranche], ["Total amount", can(me.role, "pay") ? peso(ob.items.length * (ob.tranche === "Second" ? TRANCHE_RATE.t2 : TRANCHE_RATE.t1)) : "—"], ["Transmission date", ob.date || "None", "md:col-span-2"], ["Status", bStatus(ob), "md:col-span-2"]].map(([k, v, cls]) => <div key={k} className={cls || ""}><div className="text-[11px] uppercase tracking-wide text-slate-500">{k}</div><div className="font-medium break-all">{v}</div></div>)}</div>
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-3 p-3 rounded-xl border border-slate-200 text-sm">{[["Transmission No. / Code", `${ob.no} / ${ob.code}`, "md:col-span-2"], ["Transaction No.", ob.txn || "None", "md:col-span-2"], ["Tranche", ob.tranche], [ob.stage === "SENT" ? "Transmitted amount" : "Total amount", showAmt ? peso(amtOf(ob)) : `${ob.items.length} record(s)`], ["Transmission date", ob.date || "None", "md:col-span-2"], ["Status", bStatus(ob), "md:col-span-2"]].map(([k, v, cls]) => <div key={k} className={cls || ""}><div className="text-[11px] uppercase tracking-wide text-slate-500">{k}</div><div className="font-medium break-all">{v}</div></div>)}</div>
         <div className="flex items-center gap-1.5 text-xs mb-3">{["UNVALIDATED", "PREPARED", "VALIDATED", "SENT", "ACKNOWLEDGED"].map((st, k, arr) => { const cur = arr.indexOf(bStatus(ob) === "PARTLY ACKNOWLEDGED" ? "SENT" : bStatus(ob)); return <React.Fragment key={st}><span className={`px-2 py-0.5 rounded-full ${k < cur ? "bg-emerald-100 text-emerald-700" : k === cur ? "bg-[var(--accent)] text-white" : "bg-slate-100 text-slate-400"}`}>{k + 1}. {st}</span>{k < arr.length - 1 && <ChevronRight size={12} className="text-slate-300" />}</React.Fragment>; })}</div>
+        {ob.stage === "SENT" && <div className="mb-3 p-3 rounded-xl bg-emerald-50 border border-emerald-200 flex flex-wrap items-center gap-x-6 gap-y-1 text-sm"><span className="font-semibold text-emerald-800 flex items-center gap-1.5"><CheckCircle2 size={16} />Transmitted {ob.date}</span><span>Transaction No. <b>{ob.txn}</b></span><span><b>{ob.items.length}</b> record(s) · {ob.tranche} tranche</span>{showAmt && <span>Value <b className="text-emerald-800">{peso(amtOf(ob))}</b></span>}<span className="text-slate-500">{ob.items.filter((c) => c.sub.ack).length} of {ob.items.length} acknowledged</span></div>}
         {vErr.length > 0 && <div className="mb-3"><Notice>Validation found {vErr.length} issue(s): {vErr.slice(0, 4).join(" · ")}{vErr.length > 4 ? ` · +${vErr.length - 4} more` : ""}</Notice></div>}
         <Table pageSize={5} cols={["Consult No. / Code", "Created", "Patient name", "Member name", "Status", ""]} rows={ob.items.map((c) => [`${c.id} / EP${acc}${(ob.created || ob.date || todayISO()).slice(0, 4)}${1000000 + c.id}`, c.consults.length ? xdate(c.consults[c.consults.length - 1].date) : "—", fullName(c), memberName(c), <Badge key="s" s={subStatus(c)} />,
           editable(ob) ? <button key="x" type="button" title="Remove from transmittal" onClick={() => remove(ob, c)} className="text-rose-600"><Trash2 size={14} /></button> : <span key="x" />])} />
       </div>}
+      {confirmSend && <ConfirmModal title={`Send Transmittal No. ${confirmSend.no}?`} text={`${gate}. The clinic's PhilHealth accreditation is not yet recorded as verified in this system. Send anyway? (${confirmSend.items.length} record(s)${showAmt ? ", " + peso(amtOf(confirmSend)) : ""})`} yes="Send anyway" onNo={() => setConfirmSend(null)} onYes={() => act.send(confirmSend, true)} />}
     </Panel>
   );
 }
@@ -2780,12 +2801,12 @@ export default function EKonsultaApp() {
             <div className="flex items-center gap-2 md:gap-3">
               <span className="hidden md:inline"><Badge s={cst} /></span>
               <div className="relative">
-                <button type="button" onClick={() => setThemeMenu(!themeMenu)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 text-xs font-medium hover:bg-slate-50"><Palette size={14} className="text-[var(--accent)]" /><span className="hidden md:inline">{THEMES.find((t) => t.id === theme).name}</span><ChevronDown size={12} /></button>
+                <button type="button" onClick={() => setThemeMenu(!themeMenu)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 text-xs font-medium hover:bg-slate-50"><Palette size={14} className="text-[var(--accent)]" /><span className="hidden xl:inline whitespace-nowrap">{THEMES.find((t) => t.id === theme).name}</span><ChevronDown size={12} /></button>
                 {themeMenu && <div className="absolute right-0 mt-1 w-48 max-h-80 overflow-y-auto bg-white border border-slate-200 rounded-xl shadow-lg py-1 z-40">{THEMES.map((t) => <button key={t.id} type="button" onClick={() => { setTheme(t.id); setThemeMenu(false); }} className="w-full flex items-center justify-between px-3 py-2 text-xs hover:bg-slate-50">{t.name}{theme === t.id && <CheckIcon size={14} className="text-[var(--accent)]" />}</button>)}</div>}
               </div>
-              {current.defaultPw && <button type="button" onClick={() => { setProfileTab("security"); go("profile"); }} title="You are using a default or temporary password. Change it so no one else can sign in as you." className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-semibold bg-amber-100 text-amber-800 hover:bg-amber-200"><KeyRound size={13} /><span className="hidden lg:inline">Change default password</span></button>}
-              <span title="Changes are saved to the server database automatically" className={`hidden md:inline text-[11px] ${saveState === "error" ? "text-rose-600" : "text-slate-400"}`}>{saveState === "saving" ? "Saving…" : saveState === "error" ? "Not saved" : "All changes saved"}</span>
-              {can(role, "sub") && <button type="button" onClick={runSync} className="hidden sm:flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-semibold text-white bg-[var(--accent)] hover:bg-[var(--accent-h)]"><UploadCloud size={14} />Submit ready records</button>}
+              {current.defaultPw && <button type="button" onClick={() => { setProfileTab("security"); go("profile"); }} title="You are using a default or temporary password. Change it so no one else can sign in as you." className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-semibold bg-amber-100 text-amber-800 hover:bg-amber-200"><KeyRound size={13} /><span className="hidden 2xl:inline whitespace-nowrap">Change default password</span></button>}
+              <span title="Changes are saved to the server database automatically" className={`hidden xl:inline whitespace-nowrap text-[11px] ${saveState === "error" ? "text-rose-600" : "text-slate-400"}`}>{saveState === "saving" ? "Saving…" : saveState === "error" ? "Not saved" : "All changes saved"}</span>
+              {can(role, "sub") && <button type="button" onClick={runSync} className="hidden sm:flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap text-white bg-[var(--accent)] hover:bg-[var(--accent-h)]"><UploadCloud size={14} />Submit ready records</button>}
               <div className="relative flex items-center gap-1">
                 <button type="button" aria-label="Open profile menu" aria-expanded={userMenu} onClick={() => setUserMenu(!userMenu)} className="flex items-center gap-2 rounded-xl pl-1 pr-2 py-1 hover:bg-slate-100"><Avatar u={current} /><div className="hidden lg:block leading-tight text-left"><div className="text-xs font-semibold">{current.name}</div><div className="text-[10px] text-slate-500">{ROLES[role]}</div></div><ChevronDown size={12} className="text-slate-400" /></button>
                 {userMenu && <div className="absolute right-0 top-full mt-1 w-60 bg-white border border-slate-200 rounded-xl shadow-lg py-1 z-40">
