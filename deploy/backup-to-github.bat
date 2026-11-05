@@ -18,6 +18,8 @@ rem 1. Copy the server scripts and guides into the project so GitHub has them to
 if not exist deploy mkdir deploy
 copy /Y C:\Yakap\*.bat deploy\ >nul
 copy /Y C:\Yakap\*.txt deploy\ >nul
+if not exist deploy\tools mkdir deploy\tools
+copy /Y C:\Yakap\tools\*.* deploy\tools\ >nul 2>&1
 
 rem 2. Local backup of app data (chatbot memory, assistant knowledge). NOT uploaded to GitHub.
 if exist data (
@@ -39,7 +41,7 @@ if not errorlevel 1 (
   goto end
 )
 git commit -m "Automatic backup %date% %time%" >> %LOG% 2>&1
-git push origin main >> %LOG% 2>&1
+git push origin HEAD >> %LOG% 2>&1
 if errorlevel 1 (
   echo [%date% %time%] ERROR: push to GitHub failed - check internet / GitHub sign-in. >> %LOG%
   echo ERROR: could not push to GitHub. Details are in C:\Yakap\logs\backup.log (last lines).
